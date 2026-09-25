@@ -1,0 +1,10 @@
+{
+  "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "history_file": "history.json",
+  "rounds_file": "rounds.json",
+  "min_history": 30,
+  "window": 10,
+  "max_history": 10000,
+  "auto_collect": true,
+  "game_url": "https://1xlite-130003.top/ar/casino-search?game=52358"
+}

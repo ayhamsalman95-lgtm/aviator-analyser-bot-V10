@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+chrome_profile/
+.env
+legacy_evidence/
+game_network.jsonl
+__pycache__/
+*.pyc
+chrome_profile/
+.env
