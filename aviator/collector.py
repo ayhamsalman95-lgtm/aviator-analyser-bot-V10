@@ -299,7 +299,7 @@ class Collector:
                             return els
                                 .sort((a,b) => (b.x + b.w) - (a.x + a.w) || a.y - b.y)
                                 .slice(0, 40);
-                        }()""")
+                        }""")
                         self.netlog.write({
                             "kind": "fairness_dom_probe",
                             "frame_url": safe_url(frame.url),
