@@ -154,9 +154,52 @@ class Collector:
                 try:
                     loc = frame.get_by_text(settings_re)
                     if await loc.count() > 0:
-                        await loc.first.click(timeout=2500)
-                        print("[FAIRNESS] opened Provably Fair Settings (rate limited)", flush=True)
-                        return
+                        visible = []
+                        for i in range(await loc.count()):
+                            candidate = loc.nth(i)
+                            try:
+                                if await candidate.is_visible():
+                                    visible.append(candidate)
+                            except Exception:
+                                pass
+                        if visible:
+                            await visible[0].click(timeout=2500)
+                            print("[FAIRNESS] opened Provably Fair Settings (rate limited)", flush=True)
+                            return
+
+                    # The settings item is normally inside the game's "..." menu.
+                    # Open a visible menu/options button first, then retry the item.
+                    menu_re = re.compile(r"(?i)(more|menu|options|additional)")
+                    for selector in ("button", "[role='button']"):
+                        buttons = frame.locator(selector)
+                        for i in range(await buttons.count()):
+                            button = buttons.nth(i)
+                            try:
+                                if not await button.is_visible():
+                                    continue
+                                label = " ".join(filter(None, [
+                                    await button.get_attribute("aria-label"),
+                                    await button.get_attribute("title"),
+                                    await button.inner_text(),
+                                ]))
+                                if not menu_re.search(label or ""):
+                                    continue
+                                await button.click(timeout=2500)
+                                await frame.wait_for_timeout(300)
+                                loc = frame.get_by_text(settings_re)
+                                for j in range(await loc.count()):
+                                    candidate = loc.nth(j)
+                                    try:
+                                        if await candidate.is_visible():
+                                            await candidate.click(timeout=2500)
+                                            print("[FAIRNESS] opened Provably Fair Settings via menu (rate limited)", flush=True)
+                                            return
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                continue
+
+                    self.netlog.write({"kind": "fairness_menu_not_found"})
                 except Exception as exc:
                     self.netlog.write({"kind": "fairness_click_error", "error": str(exc)})
                     return
