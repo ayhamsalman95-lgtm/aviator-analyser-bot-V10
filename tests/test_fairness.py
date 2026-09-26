@@ -81,6 +81,19 @@ class ExtractTests(unittest.TestCase):
         recs = extract_fairness({"roundId": 5, "nonce": 77, "serverSeed": "SeedSeedSeed1234"})
         self.assertFalse(hasattr(recs[0], "nonce"))
 
+    def test_seed_sha256_captured_as_round_hash(self):
+        value = "a" * 64
+        recs = extract_fairness({"roundId": 123, "seedSHA256": value})
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].round_id, 123)
+        self.assertEqual(recs[0].round_hash, value)
+
+    def test_sha512_round_hash_still_requires_128_hex(self):
+        value = "b" * 128
+        recs = extract_fairness({"roundId": 124, "roundHashSha512": value})
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].round_hash, value)
+
 
 class StoreFairnessTests(unittest.TestCase):
     def setUp(self):
