@@ -140,7 +140,6 @@ class Collector:
         """Disabled by default. When enabled: rate limited, event-driven, no control dumps."""
         if not self.cfg["fairness_autoclick"] or not self.tracker.completed_queue:
             return
-        self.tracker.completed_queue.clear()
         now = time.monotonic()
         if now - self._last_fairness_click < float(self.cfg["fairness_autoclick_min_interval_s"]):
             return
@@ -165,6 +164,7 @@ class Collector:
                         if visible:
                             await visible[0].click(timeout=2500)
                             print("[FAIRNESS] opened Provably Fair Settings (rate limited)", flush=True)
+                            self.tracker.completed_queue.clear()
                             return
 
                     # The settings item is normally inside the game's "..." menu.
@@ -193,12 +193,57 @@ class Collector:
                                         if await candidate.is_visible():
                                             await candidate.click(timeout=2500)
                                             print("[FAIRNESS] opened Provably Fair Settings via menu (rate limited)", flush=True)
+                                            self.tracker.completed_queue.clear()
                                             return
                                     except Exception:
                                         continue
                             except Exception:
                                 continue
 
+                    # Diagnostic probe: the game menu button can be an icon-only control
+                    # with no aria-label/title/text. Record only safe UI metadata, never cookies,
+                    # tokens, page source, or arbitrary DOM values.
+                    try:
+                        probe = await frame.evaluate("""() => {
+                            const visible = (el) => {
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                return !!(r.width && r.height && cs.visibility !== "hidden" &&
+                                           cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05);
+                            };
+                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 140);
+                            const els = Array.from(document.querySelectorAll(
+                                "button,[role='button'],[aria-label],a,[data-testid]"
+                            )).filter(visible).map((el) => {
+                                const r = el.getBoundingClientRect();
+                                return {
+                                    tag: el.tagName.toLowerCase(),
+                                    text: clean(el.innerText),
+                                    aria: clean(el.getAttribute("aria-label")),
+                                    title: clean(el.getAttribute("title")),
+                                    role: clean(el.getAttribute("role")),
+                                    testid: clean(el.getAttribute("data-testid")),
+                                    id: clean(el.id),
+                                    cls: clean(el.className),
+                                    x: Math.round(r.x), y: Math.round(r.y),
+                                    w: Math.round(r.width), h: Math.round(r.height)
+                                };
+                            });
+                            return els
+                                .sort((a,b) => (b.x + b.w) - (a.x + a.w) || a.y - b.y)
+                                .slice(0, 40);
+                        }()""")
+                        self.netlog.write({
+                            "kind": "fairness_dom_probe",
+                            "frame_url": safe_url(frame.url),
+                            "candidates": probe,
+                        })
+                    except Exception as probe_exc:
+                        self.netlog.write({
+                            "kind": "fairness_dom_probe_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(probe_exc),
+                        })
                     self.netlog.write({"kind": "fairness_menu_not_found"})
                 except Exception as exc:
                     self.netlog.write({"kind": "fairness_click_error", "error": str(exc)})
