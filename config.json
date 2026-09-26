@@ -13,7 +13,7 @@
   "recent_window": 200,
   "prior_strength": 20.0,
   "rtp": 0.97,
-  "fairness_autoclick": false,
+  "fairness_autoclick": true,
   "fairness_autoclick_min_interval_s": 30,
   "watchdog_no_event_s": 180,
   "login_wait_s": 180,
