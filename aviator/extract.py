@@ -91,7 +91,10 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
         elif nk in ROUND_HASH_KEYS:
             text = v.strip() if isinstance(v, str) else None
             if nk == "seedsha256":
-                if text and HEX64.match(text):
+                # Aviator has emitted seedSHA256 values in both 64-hex and
+                # 128-hex forms; accept either while keeping serverSeedSHA256
+                # as the separate 64-hex commitment field above.
+                if text and (HEX64.match(text) or HEX128.match(text)):
                     rec.round_hash = text.lower()
             elif text and HEX128.match(text):
                 rec.round_hash = text.lower()
