@@ -145,7 +145,7 @@ class Collector:
         if now - self._last_fairness_click < float(self.cfg["fairness_autoclick_min_interval_s"]):
             return
         self._last_fairness_click = now
-        settings_re = re.compile(r"(?i)provably\s*fair\s*settings")
+        settings_re = re.compile(r"provably\s*fair\s*settings", re.I)
         host = self.cfg["aviator_frame_host"]
         for page in list(context.pages):
             for frame in list(page.frames):
@@ -169,7 +169,7 @@ class Collector:
 
                     # The settings item is normally inside the game's "..." menu.
                     # Open a visible menu/options button first, then retry the item.
-                    menu_re = re.compile(r"(?i)(more|menu|options|additional)")
+                    menu_re = re.compile(r"(more|menu|options|additional)", re.I)
                     for selector in ("button", "[role='button']"):
                         buttons = frame.locator(selector)
                         for i in range(await buttons.count()):
