@@ -89,8 +89,12 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
         elif nk in PLAYER_SEEDS_KEYS:
             rec.player_seeds = _player_seeds(v)
         elif nk in ROUND_HASH_KEYS:
-            if isinstance(v, str) and HEX128.match(v.strip()):
-                rec.round_hash = v.strip().lower()
+            text = v.strip() if isinstance(v, str) else None
+            if nk == "seedsha256":
+                if text and HEX64.match(text):
+                    rec.round_hash = text.lower()
+            elif text and HEX128.match(text):
+                rec.round_hash = text.lower()
     return rec
 
 
