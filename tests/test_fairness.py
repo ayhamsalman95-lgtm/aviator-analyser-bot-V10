@@ -82,11 +82,11 @@ class ExtractTests(unittest.TestCase):
         self.assertFalse(hasattr(recs[0], "nonce"))
 
     def test_seed_sha256_captured_as_round_hash(self):
-        value = "a" * 64
-        recs = extract_fairness({"roundId": 123, "seedSHA256": value})
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0].round_id, 123)
-        self.assertEqual(recs[0].round_hash, value)
+        for value in ("a" * 64, "b" * 128):
+            recs = extract_fairness({"roundId": 123, "seedSHA256": value})
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0].round_id, 123)
+            self.assertEqual(recs[0].round_hash, value)
 
     def test_sha512_round_hash_still_requires_128_hex(self):
         value = "b" * 128
