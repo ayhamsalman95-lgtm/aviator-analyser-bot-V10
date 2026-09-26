@@ -24,7 +24,7 @@ ROUND_ID_KEYS = {"roundid"}
 SERVER_SEED_KEYS = {"serverseed", "revealedserverseed"}
 COMMITMENT_KEYS = {"serverseedsha256", "serverseedhash", "hashedserverseed", "nextserverseedsha256"}
 PLAYER_SEEDS_KEYS = {"playerseeds", "clientseeds", "playersseeds"}
-ROUND_HASH_KEYS = {"combinedhash", "combinedseedhash", "hashsha512", "sha512hash", "roundhashsha512"}
+ROUND_HASH_KEYS = {"combinedhash", "combinedseedhash", "hashsha512", "sha512hash", "roundhashsha512", "seedsha256"}
 SEED_ITEM_KEYS = ("seed", "clientSeed", "playerSeed", "value")
 
 SEED_RE = re.compile(r"^[A-Za-z0-9_\-]{4,128}$")
