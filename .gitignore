@@ -1,0 +1,30 @@
+# --- secrets / browser session (never commit) ---
+.env
+chrome_profile/
+*.cookies
+# --- runtime data (kept locally, see README_AR.md) ---
+data/
+logs/
+reports/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+legacy/
+# --- V8-V11 runtime files (migrated into data/, originals preserved in data/legacy_evidence) ---
+rounds.json
+history.json
+seeds.jsonl
+live_state.json
+collector_status.json
+telegram_sent.json
+telegram_errors.log
+subscribers.json
+diagnostics.jsonl
+game_network.jsonl
+curl
+# --- python ---
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+requirements.lock.txt
