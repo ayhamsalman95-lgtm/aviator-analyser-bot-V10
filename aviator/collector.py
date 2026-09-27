@@ -220,56 +220,99 @@ class Collector:
                             "error": str(icon_exc),
                         })
 
-                    # The actual Aviator top-right hamburger control is a div.dropdown-toggle.button
-                    # with an inner .button-icon. The live DOM inventory identified it near the top-right
-                    # edge (y ~= 52). Restrict the match to that upper control so we do not click a
-                    # different dropdown-toggle.button elsewhere in the betting UI.
+                    # The live DOM identified the real top-right menu icon as .button-icon
+                    # backed by show-more-icon*.svg. Target that exact icon/parent and then inventory
+                    # the visible menu so the fairness item can be located without guessing its text.
                     try:
-                        viewport_w = await frame.evaluate(
-                            "() => window.innerWidth || document.documentElement.clientWidth || 0"
-                        )
-                        exact_buttons = frame.locator("div.dropdown-toggle.button")
-                        exact_candidates = []
-                        for i in range(await exact_buttons.count()):
-                            button = exact_buttons.nth(i)
+                        icon_targets = frame.locator("div.dropdown-toggle.button > .button-icon")
+                        clicked = False
+                        for i in range(await icon_targets.count()):
+                            icon = icon_targets.nth(i)
                             try:
-                                if not await button.is_visible():
+                                if not await icon.is_visible():
                                     continue
-                                box = await button.bounding_box()
+                                box = await icon.bounding_box()
                                 if not box:
                                     continue
-                                if box["x"] < viewport_w * 0.70 or box["y"] > 120:
+                                if box["y"] > 120 or box["x"] < viewport_w * 0.70:
                                     continue
-                                icon = button.locator(".button-icon")
-                                if await icon.count() == 0:
+                                bg = await icon.evaluate("(el) => getComputedStyle(el).backgroundImage || ''")
+                                if "show-more-icon" not in bg:
                                     continue
-                                exact_candidates.append((box["y"], -box["x"], button, box))
+                                await icon.click(timeout=2500)
+                                clicked = True
+                                await frame.wait_for_timeout(400)
+                                self.netlog.write({
+                                    "kind": "fairness_menu_exact_click",
+                                    "frame_url": safe_url(frame.url),
+                                    "x": round(box["x"]),
+                                    "y": round(box["y"]),
+                                    "w": round(box["width"]),
+                                    "h": round(box["height"]),
+                                    "background_image": "show-more-icon",
+                                })
+                                break
                             except Exception:
                                 continue
-                        exact_candidates.sort(key=lambda item: (item[0], item[1]))
-                        if exact_candidates:
-                            _, _, target_button, box = exact_candidates[0]
-                            await target_button.click(timeout=2500)
-                            await frame.wait_for_timeout(350)
-                            self.netlog.write({
-                                "kind": "fairness_menu_exact_click",
-                                "frame_url": safe_url(frame.url),
-                                "x": round(box["x"]),
-                                "y": round(box["y"]),
-                                "w": round(box["width"]),
-                                "h": round(box["height"]),
-                            })
+
+                        if clicked:
+                            # Capture only visible UI metadata/text after the menu click.
+                            try:
+                                visible_menu = await frame.evaluate("""() => {
+                                    const clean = (v) => String(v || "").replace(/\s+/g, " ").trim().slice(0, 180);
+                                    const visible = (el) => {
+                                        const r = el.getBoundingClientRect();
+                                        const cs = getComputedStyle(el);
+                                        return r.width > 0 && r.height > 0 &&
+                                               cs.visibility !== "hidden" && cs.display !== "none" &&
+                                               parseFloat(cs.opacity || "1") > 0.05;
+                                    };
+                                    return Array.from(document.querySelectorAll(
+                                        "body *"
+                                    )).filter(visible).map(el => {
+                                        const r = el.getBoundingClientRect();
+                                        const text = clean(el.innerText);
+                                        return {
+                                            tag: el.tagName.toLowerCase(),
+                                            cls: clean(el.className),
+                                            text,
+                                            aria: clean(el.getAttribute("aria-label")),
+                                            title: clean(el.getAttribute("title")),
+                                            role: clean(el.getAttribute("role")),
+                                            x: Math.round(r.x), y: Math.round(r.y),
+                                            w: Math.round(r.width), h: Math.round(r.height)
+                                        };
+                                    }).filter(x =>
+                                        x.text || x.aria || x.title ||
+                                        /menu|dropdown|fair|provably|settings/i.test(
+                                            (x.cls + " " + x.text + " " + x.aria + " " + x.title)
+                                        )
+                                    ).sort((a,b) => a.y-b.y || a.x-b.x).slice(-120);
+                                }""")
+                                self.netlog.write({
+                                    "kind": "fairness_menu_after_exact_click",
+                                    "frame_url": safe_url(frame.url),
+                                    "candidates": visible_menu,
+                                })
+                            except Exception as menu_probe_exc:
+                                self.netlog.write({
+                                    "kind": "fairness_menu_after_exact_click_error",
+                                    "frame_url": safe_url(frame.url),
+                                    "error": str(menu_probe_exc),
+                                })
+
                             loc = frame.get_by_text(settings_re)
                             for j in range(await loc.count()):
                                 candidate = loc.nth(j)
                                 try:
                                     if await candidate.is_visible():
                                         await candidate.click(timeout=2500)
-                                        print("[FAIRNESS] opened Provably Fair Settings via Aviator hamburger (rate limited)", flush=True)
+                                        print("[FAIRNESS] opened Provably Fair Settings via exact Aviator show-more icon", flush=True)
                                         self.tracker.completed_queue.clear()
                                         return
                                 except Exception:
                                     continue
+
                             self.netlog.write({
                                 "kind": "fairness_menu_exact_no_settings",
                                 "frame_url": safe_url(frame.url),
