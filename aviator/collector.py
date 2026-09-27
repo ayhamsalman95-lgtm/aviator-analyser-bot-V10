@@ -139,6 +139,11 @@ class Collector:
     async def maybe_open_fairness(self, context) -> None:
         """Disabled by default. When enabled: rate limited, event-driven, no control dumps."""
         if not self.cfg["fairness_autoclick"] or not self.tracker.completed_queue:
+            self.netlog.write({
+                "kind": "fairness_gate_skip",
+                "autoclick": bool(self.cfg.get("fairness_autoclick", False)),
+                "queue_len": len(self.tracker.completed_queue),
+            })
             return
         now = time.monotonic()
         if now - self._last_fairness_click < float(self.cfg["fairness_autoclick_min_interval_s"]):
