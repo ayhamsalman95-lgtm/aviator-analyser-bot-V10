@@ -233,6 +233,7 @@ class Collector:
                             "() => window.innerWidth || document.documentElement.clientWidth || 0"
                         )
                         icon_targets = frame.locator("div.dropdown-toggle.button > .button-icon")
+                        icon_probe = []
                         clicked = False
                         for i in range(await icon_targets.count()):
                             icon = icon_targets.nth(i)
@@ -245,6 +246,13 @@ class Collector:
                                 if box["y"] > 120 or box["x"] < viewport_w * 0.70:
                                     continue
                                 bg = await icon.evaluate("(el) => getComputedStyle(el).backgroundImage || ''")
+                                icon_probe.append({
+                                    "x": round(box["x"]),
+                                    "y": round(box["y"]),
+                                    "w": round(box["width"]),
+                                    "h": round(box["height"]),
+                                    "background": bg[:300],
+                                })
                                 if "show-more-icon" not in bg:
                                     continue
                                 await icon.click(timeout=2500)
@@ -262,6 +270,14 @@ class Collector:
                                 break
                             except Exception:
                                 continue
+
+                        self.netlog.write({
+                            "kind": "fairness_exact_target_probe",
+                            "frame_url": safe_url(frame.url),
+                            "count": await icon_targets.count(),
+                            "candidates": icon_probe,
+                            "clicked": clicked,
+                        })
 
                         if clicked:
                             # Capture only visible UI metadata/text after the menu click.
