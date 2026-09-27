@@ -144,7 +144,7 @@ class Collector:
         if now - self._last_fairness_click < float(self.cfg["fairness_autoclick_min_interval_s"]):
             return
         self._last_fairness_click = now
-        settings_re = re.compile(r"provably\s*fair\s*(?:game|settings)", re.I)
+        settings_re = re.compile(r"provably\s*fair\s*settings", re.I)
         host = self.cfg["aviator_frame_host"]
         for page in list(context.pages):
             for frame in list(page.frames):
@@ -163,7 +163,7 @@ class Collector:
                                 pass
                         if visible:
                             await visible[0].click(timeout=2500)
-                            print("[FAIRNESS] opened Provably Fair Game/Settings (rate limited)", flush=True)
+                            print("[FAIRNESS] opened Provably Fair Settings (rate limited)", flush=True)
                             self.tracker.completed_queue.clear()
                             return
 
@@ -192,7 +192,7 @@ class Collector:
                                     try:
                                         if await candidate.is_visible():
                                             await candidate.click(timeout=2500)
-                                            print("[FAIRNESS] opened Provably Fair Game/Settings via menu (rate limited)", flush=True)
+                                            print("[FAIRNESS] opened Provably Fair Settings via menu (rate limited)", flush=True)
                                             self.tracker.completed_queue.clear()
                                             return
                                     except Exception:
@@ -256,7 +256,7 @@ class Collector:
                                 try:
                                     if await candidate.is_visible():
                                         await candidate.click(timeout=2500)
-                                        print("[FAIRNESS] opened Provably Fair Game/Settings via hamburger menu (rate limited)", flush=True)
+                                        print("[FAIRNESS] opened Provably Fair Settings via hamburger menu (rate limited)", flush=True)
                                         self.tracker.completed_queue.clear()
                                         return
                                 except Exception:
@@ -265,6 +265,58 @@ class Collector:
                         self.netlog.write({
                             "kind": "fairness_hamburger_error",
                             "error": str(hamburger_exc),
+                        })
+
+                    # Targeted diagnostic for the real three-line (hamburger) menu.
+                    # We inspect upper-right hit-test points and their ancestor metadata without clicking them.
+                    try:
+                        hit_probe = await frame.evaluate("""() => {
+                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+                            const w = window.innerWidth || document.documentElement.clientWidth || 0;
+                            const h = window.innerHeight || document.documentElement.clientHeight || 0;
+                            const points = [
+                                [0.90,0.06],[0.94,0.06],[0.97,0.06],
+                                [0.90,0.10],[0.94,0.10],[0.97,0.10],
+                                [0.90,0.14],[0.94,0.14],[0.97,0.14]
+                            ];
+                            const seen = new Set();
+                            const out = [];
+                            for (const [px,py] of points) {
+                                const x = Math.max(0, Math.min(w - 1, Math.round(w * px)));
+                                const y = Math.max(0, Math.min(h - 1, Math.round(h * py)));
+                                let el = document.elementFromPoint(x,y);
+                                for (let depth=0; el && depth<4; depth++, el=el.parentElement) {
+                                    const key = String(el);
+                                    const r = el.getBoundingClientRect();
+                                    const rec = {
+                                        point:[x,y],
+                                        tag:el.tagName.toLowerCase(),
+                                        id:clean(el.id),
+                                        cls:clean(el.className),
+                                        text:clean(el.innerText),
+                                        aria:clean(el.getAttribute && el.getAttribute("aria-label")),
+                                        title:clean(el.getAttribute && el.getAttribute("title")),
+                                        role:clean(el.getAttribute && el.getAttribute("role")),
+                                        x:Math.round(r.x), y:Math.round(r.y),
+                                        w:Math.round(r.width), h:Math.round(r.height),
+                                        html:(el.outerHTML || "").slice(0,500)
+                                    };
+                                    const sig = JSON.stringify(rec, Object.keys(rec).sort());
+                                    if (!seen.has(sig)) { seen.add(sig); out.push(rec); }
+                                }
+                            }
+                            return out.slice(0,80);
+                        }""")
+                        self.netlog.write({
+                            "kind": "fairness_hamburger_hit_probe",
+                            "frame_url": safe_url(frame.url),
+                            "candidates": hit_probe,
+                        })
+                    except Exception as hit_exc:
+                        self.netlog.write({
+                            "kind": "fairness_hamburger_hit_probe_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(hit_exc),
                         })
 
                     # Diagnostic probe: the game menu button can be an icon-only control
