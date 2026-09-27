@@ -7,7 +7,7 @@
 * The Chrome-side SmartFox dispatchEvent hook is a second, independent source;
   both feed the same RoundTracker and duplicates collapse on round id.
 * Telegram is NOT used here (outbox only).
-* Automatic fairness clicking is OFF by default (fairness_autoclick=false).
+* Automatic fairness UI opening is opt-in; verified testing showed opening the settings window adds no new WebSocket request.
 """
 from __future__ import annotations
 
@@ -138,11 +138,13 @@ class Collector:
     # ------------------------------------------------------------- fairness
     async def maybe_open_fairness(self, context) -> None:
         """Disabled by default. When enabled: rate limited, event-driven, no control dumps."""
-        if not self.cfg["fairness_autoclick"] or not self.tracker.completed_queue:
+        if not self.cfg["fairness_autoclick"]:
+            return
+        if not self.tracker.completed_queue:
             self.netlog.write({
                 "kind": "fairness_gate_skip",
-                "autoclick": bool(self.cfg.get("fairness_autoclick", False)),
-                "queue_len": len(self.tracker.completed_queue),
+                "autoclick": True,
+                "queue_len": 0,
             })
             return
         now = time.monotonic()
@@ -694,7 +696,8 @@ class Collector:
                             except Exception:
                                 continue
                             self.on_browser_events(events)
-                    await self.maybe_open_fairness(context)
+                    if self.cfg["fairness_autoclick"]:
+                        await self.maybe_open_fairness(context)
                     if time.time() - self.tracker.last_event_at > watchdog:
                         raise SessionStale(f"no SmartFox command for {watchdog:.0f}s")
                     self.store.set_status("collecting", "يجمع النتائج", **self.tracker.snapshot())
