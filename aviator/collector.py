@@ -224,6 +224,9 @@ class Collector:
                     # backed by show-more-icon*.svg. Target that exact icon/parent and then inventory
                     # the visible menu so the fairness item can be located without guessing its text.
                     try:
+                        viewport_w = await frame.evaluate(
+                            "() => window.innerWidth || document.documentElement.clientWidth || 0"
+                        )
                         icon_targets = frame.locator("div.dropdown-toggle.button > .button-icon")
                         clicked = False
                         for i in range(await icon_targets.count()):
