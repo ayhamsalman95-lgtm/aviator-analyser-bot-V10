@@ -225,17 +225,15 @@ class Collector:
                             "error": str(icon_exc),
                         })
 
-                    # The live DOM identified the real top-right menu icon as .button-icon
-                    # backed by show-more-icon*.svg. Target that exact icon/parent and then inventory
-                    # the visible menu so the fairness item can be located without guessing its text.
+                    # The live DOM identified exactly one .button-icon for the Aviator menu.
+                    # Do not rely on viewport coordinates: the browser may scale/reposition the game.
+                    # Click its parent dropdown toggle directly, then inspect the opened menu.
                     try:
-                        viewport_w = await frame.evaluate(
-                            "() => window.innerWidth || document.documentElement.clientWidth || 0"
-                        )
                         icon_targets = frame.locator("div.dropdown-toggle.button > .button-icon")
-                        icon_probe = []
+                        target_count = await icon_targets.count()
                         clicked = False
-                        for i in range(await icon_targets.count()):
+                        target_meta = None
+                        for i in range(target_count):
                             icon = icon_targets.nth(i)
                             try:
                                 if not await icon.is_visible():
@@ -243,29 +241,22 @@ class Collector:
                                 box = await icon.bounding_box()
                                 if not box:
                                     continue
-                                if box["y"] > 120 or box["x"] < viewport_w * 0.70:
-                                    continue
                                 bg = await icon.evaluate("(el) => getComputedStyle(el).backgroundImage || ''")
-                                icon_probe.append({
+                                target_meta = {
                                     "x": round(box["x"]),
                                     "y": round(box["y"]),
                                     "w": round(box["width"]),
                                     "h": round(box["height"]),
-                                    "background": bg[:300],
-                                })
-                                if "show-more-icon" not in bg:
-                                    continue
-                                await icon.click(timeout=2500)
+                                    "background_image": "show-more-icon" if "show-more-icon" in bg else bg[:300],
+                                }
+                                parent = icon.locator("..")
+                                await parent.click(timeout=2500)
                                 clicked = True
                                 await frame.wait_for_timeout(400)
                                 self.netlog.write({
                                     "kind": "fairness_menu_exact_click",
                                     "frame_url": safe_url(frame.url),
-                                    "x": round(box["x"]),
-                                    "y": round(box["y"]),
-                                    "w": round(box["width"]),
-                                    "h": round(box["height"]),
-                                    "background_image": "show-more-icon",
+                                    **target_meta,
                                 })
                                 break
                             except Exception:
@@ -274,8 +265,8 @@ class Collector:
                         self.netlog.write({
                             "kind": "fairness_exact_target_probe",
                             "frame_url": safe_url(frame.url),
-                            "count": await icon_targets.count(),
-                            "candidates": icon_probe,
+                            "count": target_count,
+                            "target": target_meta,
                             "clicked": clicked,
                         })
 
@@ -283,7 +274,7 @@ class Collector:
                             # Capture only visible UI metadata/text after the menu click.
                             try:
                                 visible_menu = await frame.evaluate("""() => {
-                                    const clean = (v) => String(v || "").replace(/\s+/g, " ").trim().slice(0, 180);
+                                    const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
                                     const visible = (el) => {
                                         const r = el.getBoundingClientRect();
                                         const cs = getComputedStyle(el);
