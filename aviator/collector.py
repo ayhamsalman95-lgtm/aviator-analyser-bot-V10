@@ -319,6 +319,76 @@ class Collector:
                             "error": str(hit_exc),
                         })
 
+                    # Targeted menu-element inventory. Do not click here; identify likely
+                    # navigation/menu controls by class/tag/icon and geometry.
+                    try:
+                        menu_inventory = await frame.evaluate("""() => {
+                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+                            const visible = (el) => {
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" &&
+                                       cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05;
+                            };
+                            const out = [];
+                            const seen = new Set();
+                            const selector = [
+                                "button","[role='button']","a",
+                                "[class*='menu' i]","[class*='hamb' i]",
+                                "[class*='option' i]","[class*='setting' i]",
+                                "[class*='toolbar' i]","[class*='nav' i]",
+                                "[class*='dropdown' i]","svg"
+                            ].join(",");
+                            for (const el of Array.from(document.querySelectorAll(selector))) {
+                                if (!visible(el)) continue;
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                const svg = el.tagName.toLowerCase() === "svg" ? el : el.querySelector("svg");
+                                const svgText = svg ? clean(svg.outerHTML).slice(0, 900) : "";
+                                const hay = [
+                                    el.tagName, el.id, el.className,
+                                    el.getAttribute("aria-label"), el.getAttribute("title"),
+                                    el.getAttribute("data-testid"), el.getAttribute("role")
+                                ].map(clean).join(" ").toLowerCase();
+                                const iconSignal = /menu|hamb|bars|ellipsis|more|options|settings|nav/.test(hay) ||
+                                                    /(<line|<rect|<path|<polyline)/i.test(svgText);
+                                const compact = r.width <= 90 && r.height <= 90;
+                                const upper = r.y <= 220;
+                                const right = r.x >= (window.innerWidth || 0) * 0.65;
+                                if (!(iconSignal || (compact && upper && right) || hay.includes("dropdown"))) continue;
+                                const rec = {
+                                    tag: el.tagName.toLowerCase(),
+                                    id: clean(el.id),
+                                    cls: clean(el.className),
+                                    text: clean(el.innerText),
+                                    aria: clean(el.getAttribute("aria-label")),
+                                    title: clean(el.getAttribute("title")),
+                                    role: clean(el.getAttribute("role")),
+                                    cursor: cs.cursor,
+                                    position: cs.position,
+                                    x: Math.round(r.x), y: Math.round(r.y),
+                                    w: Math.round(r.width), h: Math.round(r.height),
+                                    html: clean(el.outerHTML).slice(0, 1200)
+                                };
+                                const key = JSON.stringify(rec);
+                                if (!seen.has(key)) { seen.add(key); out.push(rec); }
+                            }
+                            return out
+                              .sort((a,b) => (b.x+b.w)-(a.x+a.w) || a.y-b.y)
+                              .slice(0, 120);
+                        }""")
+                        self.netlog.write({
+                            "kind": "fairness_menu_inventory",
+                            "frame_url": safe_url(frame.url),
+                            "candidates": menu_inventory,
+                        })
+                    except Exception as inv_exc:
+                        self.netlog.write({
+                            "kind": "fairness_menu_inventory_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(inv_exc),
+                        })
+
                     # Diagnostic probe: the game menu button can be an icon-only control
                     # with no aria-label/title/text. Record only safe UI metadata, never cookies,
                     # tokens, page source, or arbitrary DOM values.
