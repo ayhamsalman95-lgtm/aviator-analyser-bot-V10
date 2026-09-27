@@ -167,6 +167,59 @@ class Collector:
                             self.tracker.completed_queue.clear()
                             return
 
+                    # Diagnostic inventory for icon-only controls. This is read-only and captures
+                    # UI metadata only, so we can distinguish the menu icon from the payout dropdown.
+                    try:
+                        icon_inventory = await frame.evaluate("""() => {
+                            const clean = (v) => String(v || "").replace(/\s+/g, " ").trim().slice(0, 180);
+                            const visible = (el) => {
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                return r.width > 0 && r.height > 0 &&
+                                       cs.visibility !== "hidden" && cs.display !== "none" &&
+                                       parseFloat(cs.opacity || "1") > 0.05;
+                            };
+                            const out = [];
+                            for (const el of Array.from(document.querySelectorAll("[class*='button-icon' i], [class*='hamb' i], [class*='menu-icon' i]"))) {
+                                if (!visible(el)) continue;
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                const parent = el.parentElement;
+                                const pr = parent ? parent.getBoundingClientRect() : null;
+                                const pcs = parent ? getComputedStyle(parent) : null;
+                                out.push({
+                                    tag: el.tagName.toLowerCase(),
+                                    cls: clean(el.className),
+                                    x: Math.round(r.x), y: Math.round(r.y),
+                                    w: Math.round(r.width), h: Math.round(r.height),
+                                    cursor: cs.cursor,
+                                    bg: clean(cs.backgroundImage),
+                                    content: clean(cs.content),
+                                    parent_tag: parent ? parent.tagName.toLowerCase() : "",
+                                    parent_cls: parent ? clean(parent.className) : "",
+                                    parent_x: pr ? Math.round(pr.x) : null,
+                                    parent_y: pr ? Math.round(pr.y) : null,
+                                    parent_w: pr ? Math.round(pr.width) : null,
+                                    parent_h: pr ? Math.round(pr.height) : null,
+                                    parent_cursor: pcs ? pcs.cursor : "",
+                                    html: clean(el.outerHTML).slice(0, 900),
+                                    parent_html: parent ? clean(parent.outerHTML).slice(0, 1500) : ""
+                                });
+                            }
+                            return out.slice(0, 80);
+                        }""")
+                        self.netlog.write({
+                            "kind": "fairness_button_icon_inventory",
+                            "frame_url": safe_url(frame.url),
+                            "candidates": icon_inventory,
+                        })
+                    except Exception as icon_exc:
+                        self.netlog.write({
+                            "kind": "fairness_button_icon_inventory_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(icon_exc),
+                        })
+
                     # The actual Aviator top-right hamburger control is a div.dropdown-toggle.button
                     # with an inner .button-icon. The live DOM inventory identified it near the top-right
                     # edge (y ~= 52). Restrict the match to that upper control so we do not click a
