@@ -144,7 +144,7 @@ class Collector:
         if now - self._last_fairness_click < float(self.cfg["fairness_autoclick_min_interval_s"]):
             return
         self._last_fairness_click = now
-        settings_re = re.compile(r"provably\s*fair\s*settings", re.I)
+        settings_re = re.compile(r"provably\s*fair\s*(?:game|settings)", re.I)
         host = self.cfg["aviator_frame_host"]
         for page in list(context.pages):
             for frame in list(page.frames):
@@ -163,7 +163,7 @@ class Collector:
                                 pass
                         if visible:
                             await visible[0].click(timeout=2500)
-                            print("[FAIRNESS] opened Provably Fair Settings (rate limited)", flush=True)
+                            print("[FAIRNESS] opened Provably Fair Game/Settings (rate limited)", flush=True)
                             self.tracker.completed_queue.clear()
                             return
 
@@ -192,7 +192,7 @@ class Collector:
                                     try:
                                         if await candidate.is_visible():
                                             await candidate.click(timeout=2500)
-                                            print("[FAIRNESS] opened Provably Fair Settings via menu (rate limited)", flush=True)
+                                            print("[FAIRNESS] opened Provably Fair Game/Settings via menu (rate limited)", flush=True)
                                             self.tracker.completed_queue.clear()
                                             return
                                     except Exception:
@@ -256,7 +256,7 @@ class Collector:
                                 try:
                                     if await candidate.is_visible():
                                         await candidate.click(timeout=2500)
-                                        print("[FAIRNESS] opened Provably Fair Settings via hamburger menu (rate limited)", flush=True)
+                                        print("[FAIRNESS] opened Provably Fair Game/Settings via hamburger menu (rate limited)", flush=True)
                                         self.tracker.completed_queue.clear()
                                         return
                                 except Exception:
