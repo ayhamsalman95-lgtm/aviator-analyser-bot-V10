@@ -167,6 +167,60 @@ class Collector:
                             self.tracker.completed_queue.clear()
                             return
 
+                    # The actual Aviator top-right hamburger control is a div.dropdown-toggle.button
+                    # with an inner .button-icon. The menu inventory identified it at the live UI coordinates.
+                    # Prefer this exact control before broad text/ARIA heuristics.
+                    try:
+                        exact_buttons = frame.locator("div.dropdown-toggle.button")
+                        for i in range(await exact_buttons.count()):
+                            button = exact_buttons.nth(i)
+                            try:
+                                if not await button.is_visible():
+                                    continue
+                                box = await button.bounding_box()
+                                if not box or box["x"] < 0.70 * (await frame.evaluate(
+                                    "() => window.innerWidth || document.documentElement.clientWidth || 0"
+                                )):
+                                    continue
+                                icon = button.locator(".button-icon")
+                                if await icon.count() == 0:
+                                    continue
+                                await button.click(timeout=2500)
+                                await frame.wait_for_timeout(350)
+                                self.netlog.write({
+                                    "kind": "fairness_menu_exact_click",
+                                    "frame_url": safe_url(frame.url),
+                                    "x": round(box["x"]),
+                                    "y": round(box["y"]),
+                                    "w": round(box["width"]),
+                                    "h": round(box["height"]),
+                                })
+                                loc = frame.get_by_text(settings_re)
+                                for j in range(await loc.count()):
+                                    candidate = loc.nth(j)
+                                    try:
+                                        if await candidate.is_visible():
+                                            await candidate.click(timeout=2500)
+                                            print("[FAIRNESS] opened Provably Fair Settings via Aviator hamburger (rate limited)", flush=True)
+                                            self.tracker.completed_queue.clear()
+                                            return
+                                    except Exception:
+                                        continue
+                                # The click worked, but the menu text was not exposed under the expected
+                                # visible-text locator. Continue with the broader post-click checks.
+                                self.netlog.write({
+                                    "kind": "fairness_menu_exact_no_settings",
+                                    "frame_url": safe_url(frame.url),
+                                })
+                            except Exception:
+                                continue
+                    except Exception as exact_exc:
+                        self.netlog.write({
+                            "kind": "fairness_menu_exact_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(exact_exc),
+                        })
+
                     # The settings item is normally inside the game's "..." menu.
                     # Open a visible menu/options button first, then retry the item.
                     menu_re = re.compile(r"(more|menu|options|additional)", re.I)
