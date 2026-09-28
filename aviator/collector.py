@@ -738,6 +738,9 @@ class Collector:
         raise RuntimeError("login timeout")
 
     async def run_session(self) -> None:
+        self.pre_round.clear()
+        self._last_snapshot_round = None
+        self._last_frame_received_at = None
         from playwright.async_api import async_playwright  # imported lazily (optional in tests)
         profile = self.cfg.path("chrome_profile_dir")
         profile.mkdir(parents=True, exist_ok=True)
