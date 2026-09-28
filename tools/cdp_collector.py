@@ -18,11 +18,21 @@ from aviator.collector import Collector
 from aviator.sfs_codec import SfsDecoder, dependency_report
 
 
-def pick_page(context):
-    pages = [p for p in context.pages if "game=52358" in (p.url or "")]
-    if not pages:
-        raise RuntimeError("No Aviator game=52358 page found in the connected Chrome")
-    return pages[0]
+def pick_page(browser):
+    pages = []
+    for context in browser.contexts:
+        pages.extend(context.pages)
+    for page in pages:
+        if "game=52358" in (page.url or ""):
+            return page
+    details = "\n".join(
+        f"- {getattr(page, 'url', '')}"
+        for page in pages
+    )
+    raise RuntimeError(
+        "No Aviator game=52358 page found in the connected Chrome. "
+        f"Visible pages:\n{details or '(none)'}"
+    )
 
 
 async def post_batches(queue: asyncio.Queue, url: str, token: str) -> None:
@@ -89,8 +99,7 @@ async def main() -> None:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(cdp_url)
-            context = browser.contexts[0]
-            page = pick_page(context)
+            page = pick_page(browser)
 
             def on_ws(ws):
                 url = ws.url
