@@ -8,7 +8,7 @@ mkdir -p /app/data/chrome_profile /tmp/aviator
 rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}"
 
 echo "[RUNTIME] starting Xvfb on ${DISPLAY}" >&2
-Xvfb "${DISPLAY}" -screen 0 1024x768x24 -ac +extension RANDR > /tmp/aviator/xvfb.log 2>&1 &
+Xvfb "${DISPLAY}" -screen 0 1440x900x24 -ac +extension RANDR > /tmp/aviator/xvfb.log 2>&1 &
 XVFB_PID=$!
 
 for i in $(seq 1 50); do
