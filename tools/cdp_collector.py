@@ -174,7 +174,8 @@ async def main() -> None:
                 if page.is_closed():
                     raise RuntimeError("Aviator page closed")
 
-                for pg in list(context.pages):
+                for ctx in browser.contexts:
+                for pg in list(ctx.pages):
                     if "game=52358" not in (pg.url or ""):
                         continue
                     for frame in list(pg.frames):
