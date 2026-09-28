@@ -41,6 +41,10 @@ class PreRoundBuffer:
         self.max_age_s = float(max_age_s)
         self._events: Deque[ObservableEvent] = deque(maxlen=self.max_events)
 
+    def clear(self) -> None:
+        """Drop buffered observations when a browser session is restarted."""
+        self._events.clear()
+
     def add(self, event: ObservableEvent) -> None:
         self._events.append(event)
         cutoff = event.timestamp - self.max_age_s
