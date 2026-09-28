@@ -175,18 +175,18 @@ async def main() -> None:
                     raise RuntimeError("Aviator page closed")
 
                 for ctx in browser.contexts:
-                for pg in list(ctx.pages):
-                    if "game=52358" not in (pg.url or ""):
-                        continue
-                    for frame in list(pg.frames):
-                        try:
-                            events = await frame.evaluate(
-                                "() => (window.__aviatorBuf ? "
-                                "window.__aviatorBuf.splice(0, window.__aviatorBuf.length) : [])"
-                            )
-                        except Exception:
+                    for pg in list(ctx.pages):
+                        if "game=52358" not in (pg.url or ""):
                             continue
-                        col.on_browser_events(events)
+                        for frame in list(pg.frames):
+                            try:
+                                events = await frame.evaluate(
+                                    "() => (window.__aviatorBuf ? "
+                                    "window.__aviatorBuf.splice(0, window.__aviatorBuf.length) : [])"
+                                )
+                            except Exception:
+                                continue
+                            col.on_browser_events(events)
 
                 col.store.set_status(
                     "collecting",
