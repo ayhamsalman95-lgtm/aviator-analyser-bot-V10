@@ -162,19 +162,59 @@ class Collector:
 
     # --------------------------------------------------------------- frames
     def on_binary_frame(self, data: bytes, ws_url: str) -> None:
+        received_at = time.time()
+        self._frame_index += 1
+        frame_index = self._frame_index
+        inter_arrival_ms = (
+            (received_at - self._last_frame_received_at) * 1000.0
+            if self._last_frame_received_at is not None else None
+        )
+        self._last_frame_received_at = received_at
+        summary = binary_summary(data)
+        self.netlog.write({
+            "kind": "ws_binary_frame",
+            "url": safe_url(ws_url),
+            "frame_index": frame_index,
+            "received_at": received_at,
+            "inter_arrival_ms": inter_arrival_ms,
+            **summary,
+        })
         res = self.decoder.decode_frame(data)
         if not res.decoder_available:
-            self.netlog.write({"kind": "ws_binary_undecoded", "url": safe_url(ws_url), **binary_summary(data)})
+            self.netlog.write({"kind": "ws_binary_undecoded", "url": safe_url(ws_url),
+                               "frame_index": frame_index, **summary})
             return
-        for cmd, params in res.commands:
-            self.netlog.write({"kind": "sfs_decoded", "url": safe_url(ws_url), "command": cmd, "params": params})
+        for packet_index, ((cmd, params), span) in enumerate(zip(res.commands, res.packet_spans)):
+            self.netlog.write({
+                "kind": "sfs_decoded",
+                "url": safe_url(ws_url),
+                "command": cmd,
+                "params": params,
+                "frame_index": frame_index,
+                "packet_index": packet_index,
+                "packet_offset": span["offset"],
+                "packet_end": span["end"],
+                "packet_size": span["length"],
+                "frame_size": len(data),
+                "received_at": received_at,
+                "inter_arrival_ms": inter_arrival_ms,
+            })
+            self._capture_event(
+                timestamp=received_at, source="py-sfs", command=cmd, params=params,
+                frame_index=frame_index, packet_index=packet_index,
+                frame_size=len(data), packet_size=span["length"],
+                packet_offset=span["offset"], packet_end=span["end"],
+                inter_arrival_ms=inter_arrival_ms,
+            )
+            self._maybe_snapshot(cmd, params, received_at)
             try:
                 self.tracker.handle(cmd, params, origin="py-sfs")
-            except Exception as exc:  # one bad packet never kills the session
+            except Exception as exc:
                 self.netlog.write({"kind": "tracker_error", "command": cmd, "error": f"{type(exc).__name__}: {exc}"})
         if res.error or res.leftover:
             self.netlog.write({"kind": "sfs_decode_error", "url": safe_url(ws_url), "error": res.error,
-                               "packets": res.packets, "leftover": res.leftover, **binary_summary(data)})
+                               "packets": res.packets, "leftover": res.leftover,
+                               "frame_index": frame_index, **summary})
 
     def on_text_frame(self, text: str, ws_url: str) -> None:
         if self.cfg["log_text_frames"]:
