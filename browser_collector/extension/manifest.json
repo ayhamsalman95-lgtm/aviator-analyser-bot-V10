@@ -26,7 +26,8 @@
         "page_hook.js"
       ],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": [
@@ -37,7 +38,8 @@
         "bridge.js"
       ],
       "run_at": "document_start",
-      "world": "ISOLATED"
+      "world": "ISOLATED",
+      "all_frames": true
     }
   ],
   "options_page": "options.html"
