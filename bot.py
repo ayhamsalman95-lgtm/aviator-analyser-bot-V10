@@ -84,7 +84,16 @@ def build_app():
                 text = f"خطأ داخلي: {type(exc).__name__}"
                 print(f"[TELEGRAM] command error: {exc}", flush=True)
             try:
-                await update.message.reply_text(text)
+                if fn.__name__ == "cmd_start":
+                    keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "افتح متصفح 1xBet",
+                            web_app=WebAppInfo(url=browser_webapp_url()),
+                        )
+                    ]])
+                    await update.message.reply_text(text, reply_markup=keyboard)
+                else:
+                    await update.message.reply_text(text)
             except Exception as exc:
                 print(f"[TELEGRAM] reply failed: {exc}", flush=True)
         return handler
