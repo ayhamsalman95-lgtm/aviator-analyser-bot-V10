@@ -28,23 +28,23 @@ def format_prediction(payload: dict) -> str:
     models = out.get("models") or {}
     rec = models.get("empirical_recent", {})
     theo = models.get("theoretical", {})
-    lines = [f"🟡 الجولة {payload['round_id']} — ما قبل الإقلاع",
-             "تم تجميد التقدير عند بدء الرهانات (newStateId=1) قبل معرفة النتيجة.", "",
-             "احتمال أن تصل الجولة إلى العتبة أو تتجاوزها:"]
+    lines = [f"🟡 Round {payload['round_id']} — Pre-round",
+             "Estimate frozen at betting start (newStateId=1).", "",
+             "Threshold probabilities:"]
     for t in out.get("thresholds", []):
         k = f"{float(t):g}"
-        lines.append(f"≥{k}x: {_pct(rec.get(k))} (النظري {_pct(theo.get(k))})")
-    lines += ["", f"البيانات المستخدمة: {out.get('n_all', 0)} جولة سابقة فقط.",
-              "⚠️ احتمالات إحصائية فقط، وليست تنبؤًا مؤكدًا. الجولات مصممة لتكون مستقلة."]
+        lines.append(f"≥{k}x: {_pct(rec.get(k))} (theory {_pct(theo.get(k))})")
+    lines += ["", f"Sample: {out.get('n_all', 0)} previous rounds.",
+              "Statistical estimate only."]
     return "\n".join(lines)
 
 
 def format_result(payload: dict, store=None) -> str:
-    lines = [f"🆕 انتهت الجولة {payload['round_id']}: {float(payload['multiplier']):.2f}x"]
+    lines = [f"🆕 Round {payload['round_id']}: {float(payload['multiplier']):.2f}x"]
     if store is not None:
         pred = store.get_prediction(int(payload["round_id"]))
         if pred is not None:
-            lines.append("كان لهذه الجولة تقدير مُجمَّد مسبقًا؛ النتيجة أُرفقت به بشكل منفصل.")
+            lines.append("Pre-round estimate was recorded.")
     return "\n".join(lines)
 
 
