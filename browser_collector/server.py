@@ -58,7 +58,14 @@ async def ingest(request: web.Request) -> web.Response:
     if len(events) > 500:
         return _cors(web.json_response({"error": "too many events"}, status=413))
 
-    result = INGESTOR.ingest(events)
+    try:
+        result = INGESTOR.ingest(events)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return _cors(web.json_response({
+            "error": f"{type(exc).__name__}: {exc}",
+        }, status=500))
     return _cors(web.json_response({"ok": True, **result}))
 
 
