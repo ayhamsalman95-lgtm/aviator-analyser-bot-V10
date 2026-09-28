@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export DISPLAY="${DISPLAY:-:99}"
+export DISPLAY="${DISPLAY:-:100}"
 mkdir -p /app/data/chrome_profile /tmp/aviator
 
 echo "[RUNTIME] starting Xvfb" >&2
