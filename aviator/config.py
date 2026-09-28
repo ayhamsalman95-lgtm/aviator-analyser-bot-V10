@@ -37,6 +37,8 @@ DEFAULTS: dict[str, Any] = {
     "reconnect_backoff_s": [5, 10, 20, 40, 80, 120],
     "network_log_max_bytes": 20_000_000,
     "network_log_backups": 5,
+    "pre_round_window_s": 10.0,
+    "pre_round_max_events": 512,
     "log_http_bodies": False,
     "log_text_frames": True,
     "admin_chat_ids": [],
