@@ -227,6 +227,13 @@ class Collector:
             if unwrapped is None:
                 continue
             cmd, params = unwrapped
+            raw_t = ev.get("t") if isinstance(ev, dict) else None
+            try:
+                timestamp = float(raw_t) / 1000.0 if raw_t is not None else time.time()
+            except (TypeError, ValueError):
+                timestamp = time.time()
+            self._capture_event(timestamp=timestamp, source="js-sfs", command=cmd, params=params)
+            self._maybe_snapshot(cmd, params, timestamp)
             try:
                 self.tracker.handle(cmd, params, origin="js-sfs")
             except Exception as exc:
