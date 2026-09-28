@@ -108,6 +108,58 @@ class Collector:
         self._last_snapshot_round = None
         self._last_fairness_click = 0.0
 
+    @staticmethod
+    def _event_round_id(params):
+        if not isinstance(params, dict):
+            return None
+        raw = params.get("roundId", params.get("round_id"))
+        try:
+            value = int(raw)
+            return value if value > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _event_state_id(params):
+        if not isinstance(params, dict):
+            return None
+        raw = params.get("newStateId", params.get("newStateid"))
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _capture_event(self, *, timestamp, source, command, params,
+                       frame_index=None, packet_index=None, frame_size=None,
+                       packet_size=None, packet_offset=None, packet_end=None,
+                       inter_arrival_ms=None):
+        self.pre_round.add(ObservableEvent(
+            timestamp=timestamp,
+            source=source,
+            command=command,
+            round_id=self._event_round_id(params),
+            state_id=self._event_state_id(params),
+            frame_index=frame_index,
+            packet_index=packet_index,
+            frame_size=frame_size,
+            packet_size=packet_size,
+            packet_offset=packet_offset,
+            packet_end=packet_end,
+            inter_arrival_ms=inter_arrival_ms,
+            payload=params,
+        ))
+
+    def _maybe_snapshot(self, command, params, timestamp):
+        if str(command or "").replace("_", "").lower() != "changestate":
+            return
+        state = self._event_state_id(params)
+        rid = self._event_round_id(params)
+        if state != 1 or rid is None or rid == self._last_snapshot_round:
+            return
+        snapshot = self.pre_round.snapshot(rid, timestamp, cutoff_state=1)
+        self.netlog.write({"kind": "pre_round_snapshot", **snapshot})
+        self._last_snapshot_round = rid
+
     # --------------------------------------------------------------- frames
     def on_binary_frame(self, data: bytes, ws_url: str) -> None:
         res = self.decoder.decode_frame(data)
