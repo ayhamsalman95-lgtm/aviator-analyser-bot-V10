@@ -46,18 +46,11 @@ async def main() -> None:
             ],
         )
 
-        for pg in context.pages:
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        async def attach_page(pg):
             try:
                 await pg.add_init_script(INJECT_JS)
-            except Exception:
-                pass
-
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.add_init_script(INJECT_JS)
-
-        def attach_page(pg):
-            try:
-                pg.add_init_script(INJECT_JS)
             except Exception:
                 pass
 
@@ -87,7 +80,7 @@ async def main() -> None:
             pg.on("websocket", on_ws)
             return pg
 
-        attach_page(page)
+        await attach_page(page)
 
         if "game=52358" not in (page.url or ""):
             print(f"[RAILWAY-CDP] opening {game_url()}", flush=True)
@@ -118,8 +111,7 @@ async def main() -> None:
 
             if not active_game_pages:
                 pg = await context.new_page()
-                await pg.add_init_script(INJECT_JS)
-                attach_page(pg)
+                await attach_page(pg)
                 await pg.goto(game_url(), wait_until="domcontentloaded")
 
             for pg in list(context.pages):
