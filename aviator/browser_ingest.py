@@ -66,6 +66,13 @@ class BrowserIngestor:
                 command=command,
                 round_id=self._round_id(params),
                 state_id=self._state_id(params),
+                frame_index=None,
+                packet_index=None,
+                frame_size=None,
+                packet_size=None,
+                packet_offset=None,
+                packet_end=None,
+                inter_arrival_ms=None,
                 payload=params,
             )
         )
