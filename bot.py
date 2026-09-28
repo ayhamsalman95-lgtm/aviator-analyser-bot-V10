@@ -17,7 +17,7 @@ CFG = load_config()
 
 
 def build_app():
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    from telegram import Update
     from telegram.constants import ParseMode
     from telegram.error import BadRequest
     from telegram.ext import Application, CommandHandler, ContextTypes
@@ -36,34 +36,6 @@ def build_app():
             await app.bot.send_message(chat_id=chat_id, text=text)  # plain fallback
 
     notifier = Notifier(store, send, CFG)
-
-    def browser_webapp_url() -> str:
-        import os
-        base = (
-            os.environ.get("BROWSER_WEBAPP_URL", "").strip()
-            or "https://aviator-telegram-analyzer-production.up.railway.app/browser/app"
-        )
-        token = os.environ.get("BROWSER_WEBAPP_TOKEN", "").strip() or os.environ.get("BROWSER_COLLECTOR_TOKEN", "").strip()
-        if not token:
-            raise RuntimeError("BROWSER_WEBAPP_TOKEN or BROWSER_COLLECTOR_TOKEN is required")
-        sep = "&" if "?" in base else "?"
-        return f"{base}{sep}token={token}"
-
-    async def browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.effective_chat or not update.message:
-            return
-        try:
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("افتح متصفح 1xBet", web_app=WebAppInfo(url=browser_webapp_url()))
-            ]])
-            await update.message.reply_text(
-                "افتح المتصفح المضمّن في Telegram وسجّل الدخول إلى 1xBet.\n"
-                "بعد تسجيل الدخول اترك الصفحة مفتوحة؛ Collector يعمل داخل Railway.",
-                reply_markup=keyboard,
-            )
-        except Exception as exc:
-            await update.message.reply_text(f"تعذر فتح المتصفح: {type(exc).__name__}")
-            print(f"[TELEGRAM] browser command error: {exc}", flush=True)
 
     async def loop():
         interval = float(CFG["telegram_poll_interval_s"])
@@ -84,16 +56,7 @@ def build_app():
                 text = f"خطأ داخلي: {type(exc).__name__}"
                 print(f"[TELEGRAM] command error: {exc}", flush=True)
             try:
-                if fn.__name__ == "cmd_start":
-                    keyboard = InlineKeyboardMarkup([[
-                        InlineKeyboardButton(
-                            "افتح متصفح 1xBet",
-                            web_app=WebAppInfo(url=browser_webapp_url()),
-                        )
-                    ]])
-                    await update.message.reply_text(text, reply_markup=keyboard)
-                else:
-                    await update.message.reply_text(text)
+                await update.message.reply_text(text)
             except Exception as exc:
                 print(f"[TELEGRAM] reply failed: {exc}", flush=True)
         return handler
@@ -108,7 +71,6 @@ def build_app():
     app = Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     for name, fn in COMMANDS.items():
         app.add_handler(CommandHandler(name, make_handler(fn)))
-    app.add_handler(CommandHandler("browser", browser_command))
     return app, state
 
 
