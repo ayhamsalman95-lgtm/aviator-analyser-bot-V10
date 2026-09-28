@@ -102,6 +102,10 @@ class Collector:
                                        int(self.cfg["network_log_max_bytes"]), int(self.cfg["network_log_backups"]))
         self.tracker = RoundTracker(self.store, self.cfg, netlog=self.netlog)
         self.decoder = SfsDecoder()
+        self.pre_round = PreRoundBuffer(max_events=int(self.cfg["pre_round_max_events"]), max_age_s=float(self.cfg["pre_round_window_s"]))
+        self._frame_index = 0
+        self._last_frame_received_at = None
+        self._last_snapshot_round = None
         self._last_fairness_click = 0.0
 
     # --------------------------------------------------------------- frames
