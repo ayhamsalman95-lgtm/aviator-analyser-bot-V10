@@ -28,7 +28,6 @@ echo "[RUNTIME] starting Railway collector" >&2
 python -m tools.railway_collector > /tmp/aviator/collector.log 2>&1 &
 COLLECTOR_PID=$!
 
-# Forward child logs to Railway stdout/stderr so startup failures are visible.
 tail -F /tmp/aviator/browser-server.log 2>/dev/null &
 SERVER_LOG_PID=$!
 tail -F /tmp/aviator/bot.log 2>/dev/null &
@@ -46,16 +45,26 @@ while kill -0 "$SERVER_PID" 2>/dev/null    && kill -0 "$BOT_PID" 2>/dev/null    
   sleep 5
 done
 
+echo "[RUNTIME] critical child state:" >&2
 for name in SERVER BOT COLLECTOR; do
   case "$name" in
-    SERVER) pid="$SERVER_PID" ;;
-    BOT) pid="$BOT_PID" ;;
-    COLLECTOR) pid="$COLLECTOR_PID" ;;
+    SERVER) pid="$SERVER_PID"; log="/tmp/aviator/browser-server.log" ;;
+    BOT) pid="$BOT_PID"; log="/tmp/aviator/bot.log" ;;
+    COLLECTOR) pid="$COLLECTOR_PID"; log="/tmp/aviator/collector.log" ;;
   esac
-  if ! kill -0 "$pid" 2>/dev/null; then
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "[RUNTIME] $name still running (pid=$pid)" >&2
+  else
     echo "[RUNTIME] $name process exited (pid=$pid)" >&2
+    echo "[RUNTIME] --- $name log ---" >&2
+    cat "$log" >&2 || true
+    echo "[RUNTIME] --- end $name log ---" >&2
   fi
 done
+
+echo "[RUNTIME] --- X11VNC log ---" >&2
+cat /tmp/aviator/x11vnc.log >&2 || true
+echo "[RUNTIME] --- end X11VNC log ---" >&2
 
 echo "Aviator Railway runtime: a critical process exited." >&2
 exit 1
