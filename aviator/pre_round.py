@@ -46,16 +46,16 @@ class PreRoundBuffer:
         self._events.clear()
 
     def add(self, event: ObservableEvent) -> None:
+        # JS and Python sources can arrive slightly out of timestamp order.
+        # Keep the bounded deque and enforce the time window when reading.
         self._events.append(event)
-        cutoff = event.timestamp - self.max_age_s
-        while self._events and self._events[0].timestamp < cutoff:
-            self._events.popleft()
 
     def events_for_round(self, round_id: int, cutoff_timestamp: float) -> list[ObservableEvent]:
-        """Return only events known at or before the exact cutoff."""
+        """Return only events inside the configured pre-round time window."""
+        lower = cutoff_timestamp - self.max_age_s
         return [
             e for e in self._events
-            if e.timestamp <= cutoff_timestamp and (
+            if lower <= e.timestamp <= cutoff_timestamp and (
                 e.round_id is None or e.round_id == round_id
             )
         ]
