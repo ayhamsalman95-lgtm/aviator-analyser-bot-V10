@@ -34,6 +34,25 @@ async def health(request: web.Request) -> web.Response:
 async def options(request: web.Request) -> web.Response:
     return _cors(web.Response(status=204))
 
+async def status(request: web.Request) -> web.Response:
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {TOKEN}":
+        return _cors(web.json_response({"error": "unauthorized"}, status=401))
+    last = INGESTOR.store.last_round()
+    return _cors(web.json_response({
+        "ok": True,
+        "round_count": INGESTOR.store.round_count(),
+        "last_round": (
+            {
+                "round_id": int(last["round_id"]),
+                "multiplier": float(last["multiplier"]),
+                "source": last["source"],
+                "origin": last["origin"],
+            }
+            if last else None
+        ),
+    }))
+
 
 async def ingest(request: web.Request) -> web.Response:
     if not TOKEN:
@@ -72,6 +91,7 @@ async def ingest(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_get("/browser/health", health)
+    app.router.add_get("/browser/status", status)
     app.router.add_options("/browser/events", options)
     app.router.add_post("/browser/events", ingest)
     return app
