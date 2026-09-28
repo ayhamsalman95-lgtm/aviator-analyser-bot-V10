@@ -8,6 +8,25 @@ echo "[RUNTIME] starting Xvfb" >&2
 Xvfb "${DISPLAY}" -screen 0 1440x900x24 -ac +extension RANDR > /tmp/aviator/xvfb.log 2>&1 &
 XVFB_PID=$!
 
+# Wait until the X socket exists before starting desktop/VNC/Chromium.
+for i in $(seq 1 50); do
+  if [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [ ! -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; then
+  echo "[RUNTIME] Xvfb did not create display ${DISPLAY}" >&2
+  exit 1
+fi
+
+# A previous container crash can leave Chromium singleton lock files on the
+# persistent volume. Remove them only when no Chromium process is running.
+if ! pgrep -x chromium >/dev/null 2>&1; then
+  rm -f /app/data/chrome_profile/SingletonLock         /app/data/chrome_profile/SingletonCookie         /app/data/chrome_profile/SingletonSocket
+fi
+
 echo "[RUNTIME] starting fluxbox" >&2
 fluxbox > /tmp/aviator/fluxbox.log 2>&1 &
 FLUXBOX_PID=$!
@@ -56,15 +75,12 @@ for name in SERVER BOT COLLECTOR; do
     echo "[RUNTIME] $name still running (pid=$pid)" >&2
   else
     echo "[RUNTIME] $name process exited (pid=$pid)" >&2
-    echo "[RUNTIME] --- $name log ---" >&2
     cat "$log" >&2 || true
-    echo "[RUNTIME] --- end $name log ---" >&2
   fi
 done
 
-echo "[RUNTIME] --- X11VNC log ---" >&2
-cat /tmp/aviator/x11vnc.log >&2 || true
-echo "[RUNTIME] --- end X11VNC log ---" >&2
+echo "[RUNTIME] --- Xvfb log ---" >&2
+cat /tmp/aviator/xvfb.log >&2 || true
 
 echo "Aviator Railway runtime: a critical process exited." >&2
 exit 1
