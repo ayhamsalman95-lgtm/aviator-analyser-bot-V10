@@ -38,6 +38,9 @@ def dependency_report() -> dict:
 @dataclass
 class FrameResult:
     commands: list[tuple[Optional[str], Any]] = field(default_factory=list)
+    # Per-packet transport boundaries are retained for timing/size research.
+    # Existing callers can continue using ``commands`` unchanged.
+    packet_spans: list[dict[str, int]] = field(default_factory=list)
     packets: int = 0
     consumed: int = 0
     total: int = 0
@@ -81,8 +84,15 @@ class SfsDecoder:
             if not isinstance(consumed, int) or consumed <= 0:
                 res.error = f"decoder returned invalid consumed={consumed!r} at offset {offset}"
                 break
+            start = offset
             offset += consumed
             res.packets += 1
+            res.packet_spans.append({
+                "index": res.packets - 1,
+                "offset": start,
+                "end": offset,
+                "length": consumed,
+            })
             try:
                 cmd, params = self._parse(obj)
             except Exception as exc:
