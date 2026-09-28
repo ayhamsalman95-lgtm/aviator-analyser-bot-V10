@@ -28,6 +28,14 @@ class PreRoundBufferTests(unittest.TestCase):
             b.add(ObservableEvent(float(i), "ws", str(i), 1, None, i, 0, 1, 1, 0, 1, None, {}))
         self.assertEqual(len(b.events_for_round(1, 3.0)), 2)
 
+    def test_snapshot_excludes_later_timestamp_even_if_same_round(self):
+        b = PreRoundBuffer(max_events=10, max_age_s=10)
+        b.add(ObservableEvent(100.0, "ws", "changeState", 7, 1, 1, 0, 10, 10, 0, 10, None, {"newStateId": 1}))
+        b.add(ObservableEvent(100.1, "ws", "changeState", 7, 2, 2, 0, 10, 10, 0, 10, 100.0, {"newStateId": 2}))
+        snap = b.snapshot(7, 100.0)
+        self.assertEqual(snap["command_sequence"], ["changeState"])
+        self.assertEqual(snap["event_count"], 1)
+
     def test_clear_removes_old_session_events(self):
         b = PreRoundBuffer()
         b.add(ObservableEvent(100.0, "ws", "old", 1, None, 1, 0, 1, 1, 0, 1, None, {}))
