@@ -18,6 +18,7 @@ import time
 from .config import load_config
 from .db import Store
 from .netlog import RotatingJsonlLog, safe_url
+from .pre_round import ObservableEvent, PreRoundBuffer
 from .sfs_codec import SfsDecoder, binary_summary, dependency_report, unwrap_browser_event
 from .tracker import RoundTracker
 
