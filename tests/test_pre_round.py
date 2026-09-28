@@ -28,6 +28,12 @@ class PreRoundBufferTests(unittest.TestCase):
             b.add(ObservableEvent(float(i), "ws", str(i), 1, None, i, 0, 1, 1, 0, 1, None, {}))
         self.assertEqual(len(b.events_for_round(1, 3.0)), 2)
 
+    def test_clear_removes_old_session_events(self):
+        b = PreRoundBuffer()
+        b.add(ObservableEvent(100.0, "ws", "old", 1, None, 1, 0, 1, 1, 0, 1, None, {}))
+        b.clear()
+        self.assertEqual(b.events_for_round(1, 100.0), [])
+
     def test_invalid_configuration(self):
         with self.assertRaises(ValueError):
             PreRoundBuffer(0, 10)
