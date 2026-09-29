@@ -163,7 +163,7 @@ class Collector:
     # --------------------------------------------------------------- frames
     def on_binary_frame(self, data: bytes, ws_url: str) -> None:
         received_at = time.time()
-        self._frame_index += 1
+        self._frame_index = getattr(self, "_frame_index", 0) + 1
         frame_index = self._frame_index
         inter_arrival_ms = (
             (received_at - self._last_frame_received_at) * 1000.0
