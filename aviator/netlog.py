@@ -1,9 +1,10 @@
-"""Rotating, redacted JSONL network log."""
+"""Rotating JSONL evidence log with explicit loss observability."""
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,16 @@ class RotatingJsonlLog:
         self.max_bytes = int(max_bytes)
         self.backups = int(backups)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.write_failures = 0
+        self.rotation_events = 0
+        self.last_error: str | None = None
 
-    def _rotate(self) -> None:
+    def _rotate(self) -> dict:
+        dropped_backup = None
+        if self.backups > 0:
+            dropped = self.path.with_name(f"{self.path.name}.{self.backups}")
+            if dropped.exists():
+                dropped_backup = str(dropped)
         for i in range(self.backups - 1, 0, -1):
             src = self.path.with_name(f"{self.path.name}.{i}")
             dst = self.path.with_name(f"{self.path.name}.{i + 1}")
@@ -53,14 +62,50 @@ class RotatingJsonlLog:
             os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
         else:
             self.path.unlink()
+        self.rotation_events += 1
+        return {
+            "old_file": str(self.path),
+            "archived_file": str(self.path.with_name(f"{self.path.name}.1")) if self.backups > 0 else None,
+            "active_file": str(self.path),
+            "max_bytes": self.max_bytes,
+            "backups": self.backups,
+            "dropped_backup": dropped_backup,
+            "reason": "size_limit",
+            "rotation_index": self.rotation_events,
+        }
 
-    def write(self, record: dict) -> None:
+    def _write_line(self, line: str) -> bool:
+        try:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+            return True
+        except Exception as exc:
+            self.write_failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            print(f"[EVIDENCE-WRITE-FAILURE] {self.path}: {self.last_error}", file=sys.stderr, flush=True)
+            return False
+
+    def write(self, record: dict) -> bool:
         try:
             rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **redact(record)}
             line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+            rotation = None
             if self.path.exists() and self.path.stat().st_size + len(line.encode("utf-8")) > self.max_bytes:
-                self._rotate()
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(line)
-        except Exception:
-            pass  # logging must never break collection
+                rotation = self._rotate()
+            if rotation is not None:
+                event = {"kind": "network_log_rotation", "timestamp": time.time(),
+                         "session_id": record.get("session_id"),
+                         "collector_run_id": record.get("collector_run_id"), **rotation}
+                rotation_line = json.dumps(
+                    {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **event},
+                    ensure_ascii=False, default=str) + "\n"
+                if not self._write_line(rotation_line):
+                    return False
+            return self._write_line(line)
+        except Exception as exc:
+            self.write_failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            print(f"[EVIDENCE-WRITE-FAILURE] {self.path}: {self.last_error}", file=sys.stderr, flush=True)
+            return False

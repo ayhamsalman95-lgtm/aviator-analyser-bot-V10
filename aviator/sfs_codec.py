@@ -1,23 +1,22 @@
 """SmartFoxServer 2X binary frame decoding.
 
-Real decoding is delegated to the `sfs2x-py` package (import name `sfs2x`),
-API: decode_s2c_packet(bytes) -> (dict, consumed:int), parse_s2c_command(dict) -> (cmd, params).
-No fallback decoder is provided on purpose: if the package is missing, binary
-frames are logged as opaque bytes (length + sha1 + short hex preview) and are
-NEVER pushed through text/JSON/hex heuristics.
+The real decoder is delegated to sfs2x-py. This module never guesses the
+meaning of opaque binary data and records strict packet-consumption metadata so
+the collector can preserve the original frame when decoding is incomplete.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-try:  # pragma: no cover - depends on the local environment
+try:
     import sfs2x as _sfs2x
     from sfs2x import decode_s2c_packet as _decode, parse_s2c_command as _parse
     SFS2X_AVAILABLE = True
     SFS2X_IMPORT_ERROR: Optional[str] = None
-except Exception as _exc:  # ImportError or a broken install
+except Exception as _exc:
     _sfs2x = None
     _decode = None
     _parse = None
@@ -38,14 +37,17 @@ def dependency_report() -> dict:
 @dataclass
 class FrameResult:
     commands: list[tuple[Optional[str], Any]] = field(default_factory=list)
-    # Per-packet transport boundaries are retained for timing/size research.
-    # Existing callers can continue using ``commands`` unchanged.
     packet_spans: list[dict[str, int]] = field(default_factory=list)
     packets: int = 0
     consumed: int = 0
     total: int = 0
     error: Optional[str] = None
+    error_stage: Optional[str] = None
+    decode_status: str = "success"
     decoder_available: bool = True
+    packet_limit_reached: bool = False
+    remaining_sha256: Optional[str] = None
+    remaining_b64: Optional[str] = None
 
     @property
     def leftover(self) -> int:
@@ -53,37 +55,75 @@ class FrameResult:
 
 
 def binary_summary(data: bytes, preview: int = 24) -> dict:
-    return {"length": len(data), "sha1": hashlib.sha1(data).hexdigest(), "preview_hex": data[:preview].hex()}
+    return {
+        "length": len(data),
+        "sha1": hashlib.sha1(data).hexdigest(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "preview_hex": data[:preview].hex(),
+    }
 
 
 class SfsDecoder:
-    """Decode EVERY packet in a WebSocket frame using the consumed length."""
+    """Decode packets using the decoder-reported consumed length."""
 
     def __init__(self, decode: Optional[Callable] = None, parse: Optional[Callable] = None,
                  max_packets: int = 256):
         self._decode = decode or _decode
         self._parse = parse or _parse
-        self.max_packets = max_packets
+        self.max_packets = int(max_packets)
 
     @property
     def available(self) -> bool:
         return self._decode is not None and self._parse is not None
 
+    def _set_remainder(self, res: FrameResult, data: bytes, offset: int) -> None:
+        remainder = data[offset:]
+        if remainder:
+            res.remaining_sha256 = hashlib.sha256(remainder).hexdigest()
+            res.remaining_b64 = base64.b64encode(remainder).decode("ascii")
+
     def decode_frame(self, data: bytes) -> FrameResult:
         res = FrameResult(total=len(data), decoder_available=self.available)
         if not self.available:
             res.error = "decoder_unavailable"
+            res.error_stage = "availability"
+            res.decode_status = "unavailable"
             return res
+
         offset = 0
-        while offset < len(data) and res.packets < self.max_packets:
+        while offset < len(data):
+            if res.packets >= self.max_packets:
+                res.packet_limit_reached = True
+                res.error = f"packet limit reached ({self.max_packets}) at offset {offset}"
+                res.error_stage = "packet_limit"
+                res.decode_status = "packet_limit"
+                break
+
+            remaining = len(data) - offset
             try:
                 obj, consumed = self._decode(data[offset:])
             except Exception as exc:
                 res.error = f"{type(exc).__name__}: {exc} (at offset {offset})"
+                res.error_stage = "decode"
+                res.decode_status = "decompression_error" if "compress" in type(exc).__name__.lower() else "exception"
                 break
-            if not isinstance(consumed, int) or consumed <= 0:
+
+            if isinstance(consumed, bool) or not isinstance(consumed, int):
                 res.error = f"decoder returned invalid consumed={consumed!r} at offset {offset}"
+                res.error_stage = "consumption"
+                res.decode_status = "malformed"
                 break
+            if consumed <= 0:
+                res.error = f"decoder returned non-positive consumed={consumed!r} at offset {offset}"
+                res.error_stage = "consumption"
+                res.decode_status = "malformed"
+                break
+            if consumed > remaining:
+                res.error = f"decoder consumed {consumed} bytes but only {remaining} remain at offset {offset}"
+                res.error_stage = "consumption"
+                res.decode_status = "incomplete"
+                break
+
             start = offset
             offset += consumed
             res.packets += 1
@@ -97,18 +137,25 @@ class SfsDecoder:
                 cmd, params = self._parse(obj)
             except Exception as exc:
                 res.error = f"parse {type(exc).__name__}: {exc}"
-                cmd, params = None, None
+                res.error_stage = "parse"
+                res.decode_status = "packet_error"
+                cmd, params = None, obj
             res.commands.append((cmd, params if params is not None else obj))
+            if res.error_stage == "parse":
+                break
+
         res.consumed = offset
+        if res.leftover:
+            self._set_remainder(res, data, offset)
+            if res.error is None:
+                res.error = f"unconsumed trailing bytes: {res.leftover}"
+                res.error_stage = "trailing"
+                res.decode_status = "incomplete"
         return res
 
 
 def unwrap_browser_event(event: dict) -> Optional[tuple[str, Any]]:
-    """Map a Chrome-side SmartFox dispatchEvent snapshot to (cmd, params).
-
-    SFS2X JS dispatches extension responses as type 'extensionResponse' with
-    `cmd` and `params`. Other event types (connection, login, ...) are ignored.
-    """
+    """Map a Chrome-side SmartFox dispatchEvent snapshot to (cmd, params)."""
     if not isinstance(event, dict):
         return None
     data = event.get("data")

@@ -58,6 +58,8 @@ class NetworkExtractor:
         self.source_path = Path(source_path)
         self.output_path = output_path or self.source_path.parent / f"derived_evidence.jsonl"
         self.chunk_size = chunk_size  # Write in chunks to manage memory
+        self.extraction_run_id = __import__("uuid").uuid4().hex
+        self.source_file = str(self.source_path)
         self.stats = {
             "total_lines": 0,
             "parsed": 0,
@@ -116,12 +118,15 @@ class NetworkExtractor:
         Does NOT reduce to metadata only - includes full params and state.
         """
         records = []
-        kind = data.get("kind", "").lower()
+        raw_kind = data.get("kind")
+        kind = raw_kind.lower() if isinstance(raw_kind, str) else ""
+        source_kind = raw_kind if isinstance(raw_kind, str) else None
         
         # Handle sfs_decoded (actual collector format)
         if kind == "sfs_decoded":
             self.stats["sfs_decoded_count"] += 1
-            cmd = data.get("command", "").lower()
+            raw_cmd = data.get("command")
+            cmd = raw_cmd.lower() if isinstance(raw_cmd, str) else ""
             params = data.get("params", {})
             url = data.get("url", "")
             
@@ -133,6 +138,12 @@ class NetworkExtractor:
             if isinstance(params, dict):
                 fairness_recs = extract_fairness(params, max_nodes=500)
                 for fr in fairness_recs:
+                    if fr.scan_truncated:
+                        records.append({"classification": "fairness_scan_truncated",
+                                        "kind": "fairness_scan_truncated", "source": "sfs_decoded",
+                                        "path": fr.path, "scan_limit": fr.scan_limit,
+                                        "list_truncations": fr.list_truncations})
+                        continue
                     if fr.meaningful():
                         self.stats["fairness_evidence_count"] += 1
                         record = {
@@ -151,6 +162,8 @@ class NetworkExtractor:
                             record["commitment"] = fr.commitment
                         if fr.round_hash:
                             record["round_hash"] = fr.round_hash
+                        if fr.crypto_observations:
+                            record["crypto_observations"] = fr.crypto_observations
                         records.append(record)
             
             # Classify SFS command and PRESERVE COMPLETE PARAMS
@@ -259,12 +272,19 @@ class NetworkExtractor:
         # Handle sfs_message (legacy format)
         elif kind == "sfs_message":
             self.stats["sfs_message_count"] += 1
-            cmd = data.get("cmd", "").lower()
+            raw_cmd = data.get("cmd")
+            cmd = raw_cmd.lower() if isinstance(raw_cmd, str) else ""
             params = data.get("params", {})
             
             if isinstance(params, dict):
                 fairness_recs = extract_fairness(params, max_nodes=500)
                 for fr in fairness_recs:
+                    if fr.scan_truncated:
+                        records.append({"classification": "fairness_scan_truncated",
+                                        "kind": "fairness_scan_truncated", "source": "sfs_message",
+                                        "path": fr.path, "scan_limit": fr.scan_limit,
+                                        "list_truncations": fr.list_truncations})
+                        continue
                     if fr.meaningful():
                         self.stats["fairness_evidence_count"] += 1
                         record = {
@@ -278,10 +298,12 @@ class NetworkExtractor:
                             record["server_seed"] = fr.server_seed
                         if fr.player_seeds:
                             record["player_seeds"] = fr.player_seeds
+                        if fr.crypto_observations:
+                            record["crypto_observations"] = fr.crypto_observations
                         records.append(record)
         
         # Handle WebSocket binary frames
-        elif kind in ("ws_binary", "ws_binary_undecoded"):
+        elif kind in ("ws_binary", "ws_binary_undecoded", "ws_binary_frame"):
             self.stats["ws_binary_undecoded_count" if "undecoded" in kind else "ws_binary_count"] += 1
             classification = "undecoded_binary" if "undecoded" in kind else "websocket_frame"
             record = {
@@ -293,10 +315,23 @@ class NetworkExtractor:
                 "url": safe_url(data.get("url", "")),
             }
             # Preserve complete frame data if available
-            if "frame_data" in data:
-                record["frame_data"] = data.get("frame_data")
+            for key in ("frame_data", "payload_b64", "payload_complete", "sha256", "sha1",
+                        "byte_length", "length", "frame_index", "frame_id", "session_id",
+                        "collector_run_id", "event_id", "decode_status"):
+                if key in data:
+                    record[key] = data.get(key)
             records.append(record)
         
+        elif kind == "sfs_decode_error":
+            records.append({"classification": "decode_error", "kind": "sfs_decode_error",
+                            "source": "collector", "complete_evidence": data})
+        elif kind in ("pre_round_snapshot", "tracker_error", "frame_handler_error",
+                      "ws_open", "ws_close", "ws_text", "browser_event", "browser_queue_overflow",
+                      "browser_event_unhandled", "fairness_gate_skip",
+                      "fairness_button_icon_inventory", "fairness_button_icon_inventory_error",
+                      "fairness_menu_exact_click", "fairness_exact_target_probe"):
+            records.append({"classification": kind, "kind": kind,
+                            "source": "collector", "complete_evidence": data})
         # Handle HTTP responses (may contain fairness or game data)
         elif kind == "http_response":
             self.stats["http_response_count"] += 1
@@ -320,6 +355,12 @@ class NetworkExtractor:
                     
                     fairness_recs = extract_fairness(body_data, max_nodes=500)
                     for fr in fairness_recs:
+                        if fr.scan_truncated:
+                            records.append({"classification": "fairness_scan_truncated",
+                                            "kind": "fairness_scan_truncated", "source": "http_response",
+                                            "path": fr.path, "scan_limit": fr.scan_limit,
+                                            "list_truncations": fr.list_truncations})
+                            continue
                         if fr.meaningful():
                             has_fairness_evidence = True
                             self.stats["fairness_evidence_count"] += 1
@@ -333,6 +374,7 @@ class NetworkExtractor:
                                 "url": safe_url(url),
                                 "server_seed": fr.server_seed,
                                 "player_seeds": fr.player_seeds,
+                                "crypto_observations": fr.crypto_observations,
                             }
                             records.append(record)
                 except (json.JSONDecodeError, TypeError):
@@ -360,6 +402,10 @@ class NetworkExtractor:
                 record["headers"] = redact_sensitive(headers)
             records.append(record)
         
+        if not records:
+            records.append({"classification": "unhandled_kind", "kind": "unhandled_kind",
+                            "source": "collector", "source_kind": source_kind,
+                            "complete_evidence": data})
         return records
 
     def extract(self) -> dict:
@@ -371,17 +417,23 @@ class NetworkExtractor:
         
         # Write in bounded chunks
         chunk = []
-        for line_data in self._read_lines():
+        for source_line, line_data in enumerate(self._read_lines(), 1):
             self.stats["total_lines"] += 1
             
             try:
-                received_at = line_data.get("timestamp", time.time())
+                received_at = line_data.get("received_at")
+                timestamp_provenance = "collector_received_at"
+                if received_at is None and line_data.get("timestamp") is not None:
+                    received_at = line_data.get("timestamp")
+                    timestamp_provenance = "legacy_timestamp"
                 if isinstance(received_at, str):
                     try:
                         received_at = float(received_at)
                     except (ValueError, TypeError):
-                        received_at = time.time()
-                
+                        received_at = None
+                        timestamp_provenance = "absent"
+                if received_at is None:
+                    timestamp_provenance = "absent"
                 self.stats["parsed"] += 1
                 
                 # Extract evidence
@@ -389,7 +441,15 @@ class NetworkExtractor:
                 
                 # Add to chunk
                 for rec in records:
-                    # Apply redaction
+                    rec["schema_version"] = 2
+                    rec["extraction_run_id"] = self.extraction_run_id
+                    rec["source_file"] = self.source_file
+                    rec["source_line"] = source_line
+                    rec["source_kind"] = line_data.get("kind")
+                    rec["event_timestamp"] = received_at
+                    rec["timestamp_provenance"] = timestamp_provenance
+                    rec["extracted_at"] = time.time()
+                    rec["source_record"] = line_data
                     rec_clean = redact_sensitive(rec)
                     chunk.append(rec_clean)
                     self.stats["written"] += 1
@@ -406,6 +466,19 @@ class NetworkExtractor:
                     chunk = []
             except Exception as e:
                 self.stats["errors"] += 1
+                chunk.append(redact_sensitive({
+                    "schema_version": 2,
+                    "extraction_run_id": self.extraction_run_id,
+                    "source_file": self.source_file,
+                    "source_line": source_line,
+                    "source_kind": line_data.get("kind"),
+                    "classification": "extractor_error",
+                    "kind": "extractor_error",
+                    "error": f"{type(e).__name__}: {e}",
+                    "source_record": line_data,
+                    "extracted_at": time.time(),
+                }))
+                self.stats["written"] += 1
         
         # Write remaining chunk (CRITICAL: don't lose data at end)
         if chunk:

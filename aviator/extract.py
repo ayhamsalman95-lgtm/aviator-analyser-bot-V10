@@ -1,11 +1,7 @@
-"""Strict provably-fair parsing.
+"""Evidence-aware fairness parsing.
 
-Rules (replacing the old heuristic seeds.py):
-* Only explicitly named keys are read. Bare `hash`, `seed`, `sh`, `cs`, ... are ignored.
-* No free-text / raw-hex scanning. No DOM scraping. No nonce (Aviator does not use one).
-* A value is associated with a round ONLY when a `roundId` key sits in the SAME
-  object as the fairness fields. A nested `fairness` object uses its own
-  `roundId`; it never inherits the parent message's (current) round id.
+Only explicitly named fields are interpreted. Ambiguous cryptographic fields are
+preserved as observations instead of being forced into verifier semantics.
 """
 from __future__ import annotations
 
@@ -24,7 +20,8 @@ ROUND_ID_KEYS = {"roundid"}
 SERVER_SEED_KEYS = {"serverseed", "revealedserverseed"}
 COMMITMENT_KEYS = {"serverseedsha256", "serverseedhash", "hashedserverseed", "nextserverseedsha256"}
 PLAYER_SEEDS_KEYS = {"playerseeds", "clientseeds", "playersseeds"}
-ROUND_HASH_KEYS = {"combinedhash", "combinedseedhash", "hashsha512", "sha512hash", "roundhashsha512", "seedsha256"}
+ROUND_HASH_KEYS = {"combinedhash", "combinedseedhash", "hashsha512", "sha512hash", "roundhashsha512"}
+OBSERVED_CRYPTO_KEYS = {"seedsha256"}
 SEED_ITEM_KEYS = ("seed", "clientSeed", "playerSeed", "value")
 
 SEED_RE = re.compile(r"^[A-Za-z0-9_\-]{4,128}$")
@@ -40,10 +37,15 @@ class FairnessRecord:
     player_seeds: list[str] = field(default_factory=list)
     commitment: Optional[str] = None
     round_hash: Optional[str] = None
+    crypto_observations: list[dict[str, Any]] = field(default_factory=list)
     is_next_commitment: bool = False
+    scan_truncated: bool = False
+    scan_limit: Optional[int] = None
+    list_truncations: int = 0
 
     def meaningful(self) -> bool:
-        return bool(self.server_seed or self.player_seeds or self.commitment or self.round_hash)
+        return bool(self.server_seed or self.player_seeds or self.commitment or
+                    self.round_hash or self.crypto_observations or self.scan_truncated)
 
 
 def _seed(value: Any) -> Optional[str]:
@@ -67,7 +69,7 @@ def _player_seeds(value: Any) -> list[str]:
                     if s:
                         break
         if s:
-            out.append(s)  # order preserved: panel order matters for SHA-512
+            out.append(s)
     return out
 
 
@@ -90,23 +92,27 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
             rec.player_seeds = _player_seeds(v)
         elif nk in ROUND_HASH_KEYS:
             text = v.strip() if isinstance(v, str) else None
-            if nk == "seedsha256":
-                # Aviator has emitted seedSHA256 values in both 64-hex and
-                # 128-hex forms; accept either while keeping serverSeedSHA256
-                # as the separate 64-hex commitment field above.
-                if text and (HEX64.match(text) or HEX128.match(text)):
-                    rec.round_hash = text.lower()
-            elif text and HEX128.match(text):
+            if text and HEX128.match(text):
                 rec.round_hash = text.lower()
+        elif nk in OBSERVED_CRYPTO_KEYS:
+            if isinstance(v, str) and (HEX64.match(v.strip()) or HEX128.match(v.strip())):
+                rec.crypto_observations.append({
+                    "field_name": str(k),
+                    "value": v.strip().lower(),
+                    "algorithm": "SHA-256",
+                    "value_length": len(v.strip()),
+                    "semantic_type": "unknown",
+                })
     return rec
 
 
 def extract_fairness(data: Any, max_nodes: int = 2000) -> list[FairnessRecord]:
-    """Return one record per object that directly contains fairness fields."""
+    """Return one record per object that directly contains named evidence fields."""
     out: list[FairnessRecord] = []
     stack: list[tuple[Any, str]] = [(data, "$")]
     seen: set[int] = set()
     nodes = 0
+    list_truncations = 0
     while stack and nodes < max_nodes:
         node, path = stack.pop()
         nodes += 1
@@ -121,8 +127,14 @@ def extract_fairness(data: Any, max_nodes: int = 2000) -> list[FairnessRecord]:
                 if isinstance(v, (dict, list)):
                     stack.append((v, f"{path}.{k}"))
         elif isinstance(node, list):
+            if len(node) > 500:
+                list_truncations += 1
             for i, v in enumerate(node[:500]):
                 if isinstance(v, (dict, list)):
                     stack.append((v, f"{path}[{i}]"))
+    scan_truncated = bool(stack) or nodes >= max_nodes or list_truncations > 0
+    if scan_truncated:
+        out.append(FairnessRecord(path="$.__scan__", scan_truncated=True,
+                                  scan_limit=max_nodes, list_truncations=list_truncations))
     out.sort(key=lambda r: r.path)
     return out

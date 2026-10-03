@@ -12,8 +12,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import re
 import time
+import uuid
 
 from .config import load_config
 from .db import Store
@@ -27,41 +30,78 @@ INJECT_JS = r"""
   if (window.__aviatorHooked) return;
   window.__aviatorHooked = true;
   window.__aviatorBuf = [];
+  const QUEUE_LIMIT = 2000;
   const push = (item) => {
     try {
+      if (window.__aviatorBuf.length >= QUEUE_LIMIT) {
+        const dropped = Math.min(1000, window.__aviatorBuf.length);
+        window.__aviatorBuf.splice(0, dropped);
+        window.__aviatorBuf.push({
+          t: Date.now(),
+          event_type: "browserQueueOverflow",
+          data: {dropped_count: dropped, queue_limit: QUEUE_LIMIT}
+        });
+      }
       window.__aviatorBuf.push(item);
-      if (window.__aviatorBuf.length > 2000) window.__aviatorBuf.splice(0, 1000);
-    } catch (e) {}
+    } catch (e) {
+      try { console.error("[AVIATOR-HOOK] queue push failed", e); } catch (_) {}
+    }
   };
-  const seen = new WeakSet();
-  const snap = (v, d = 0) => {
-    if (d > 6) return null;
+  const snap = (v, d = 0, seen = new WeakSet()) => {
+    if (d > 6) return {__aviator_truncated__: true, reason: "depth_limit", depth_limit: 6};
     if (v === null || v === undefined) return v;
     const t = typeof v;
     if (t === "string" || t === "number" || t === "boolean") return v;
     if (t === "bigint") return String(v);
     if (t !== "object") return null;
-    if (seen.has(v)) return null;
+    if (seen.has(v)) return {__aviator_truncated__: true, reason: "cycle_or_reentry"};
     seen.add(v);
     try {
       if (typeof v.getKeysArray === "function") {
         const o = {};
-        for (const k of (v.getKeysArray() || []).slice(0, 200)) { try { o[String(k)] = snap(v.get(k), d + 1); } catch (e) {} }
+        const keys = v.getKeysArray() || [];
+        for (const k of keys.slice(0, 200)) {
+          try { o[String(k)] = snap(v.get(k), d + 1, seen); } catch (e) {}
+        }
+        if (keys.length > 200) {
+          o.__aviator_truncated__ = {reason: "object_key_limit", original_count: keys.length, retained_count: 200};
+        }
         return o;
       }
       if (typeof v.size === "function" && typeof v.get === "function") {
         const a = [];
-        for (let i = 0; i < Math.min(v.size(), 500); i++) { try { a.push(snap(v.get(i), d + 1)); } catch (e) {} }
+        const size = Number(v.size()) || 0;
+        for (let i = 0; i < Math.min(size, 500); i++) {
+          try { a.push(snap(v.get(i), d + 1, seen)); } catch (e) {}
+        }
+        if (size > 500) {
+          a.push({__aviator_truncated__: true, reason: "array_limit", original_count: size, retained_count: 500});
+        }
         return a;
       }
-    } catch (e) {}
-    if (Array.isArray(v)) return v.slice(0, 500).map(x => snap(x, d + 1));
-    const o = {};
-    for (const k of Object.keys(v).slice(0, 200)) {
-      if (/^(password|passwd|token|authorization|cookie|secret|session)$/i.test(k)) continue;
-      try { o[k] = snap(v[k], d + 1); } catch (e) {}
+      if (Array.isArray(v)) {
+        const n = v.length;
+        const a = v.slice(0, 500).map(x => snap(x, d + 1, seen));
+        if (n > 500) {
+          a.push({__aviator_truncated__: true, reason: "array_limit", original_count: n, retained_count: 500});
+        }
+        return a;
+      }
+      const o = {};
+      const keys = Object.keys(v);
+      for (const k of keys.slice(0, 200)) {
+        if (/^(password|passwd|token|authorization|cookie|secret|session)$/i.test(k)) continue;
+        try { o[k] = snap(v[k], d + 1, seen); } catch (e) {}
+      }
+      if (keys.length > 200) {
+        o.__aviator_truncated__ = {reason: "object_key_limit", original_count: keys.length, retained_count: 200};
+      }
+      return o;
+    } catch (e) {
+      return {__aviator_truncated__: true, reason: "snapshot_error"};
+    } finally {
+      try { seen.delete(v); } catch (e) {}
     }
-    return o;
   };
   const hook = () => {
     try {
@@ -107,6 +147,9 @@ class Collector:
         self._last_frame_received_at = None
         self._last_snapshot_round = None
         self._last_fairness_click = 0.0
+        self.session_id = uuid.uuid4().hex
+        self.collector_run_id = None
+        self._event_index = 0
 
     @staticmethod
     def _event_round_id(params):
@@ -157,12 +200,38 @@ class Collector:
         if state != 1 or rid is None or rid == self._last_snapshot_round:
             return
         snapshot = self.pre_round.snapshot(rid, timestamp, cutoff_state=1)
-        self.netlog.write({"kind": "pre_round_snapshot", **snapshot})
+        self.netlog.write({"kind": "pre_round_snapshot",
+                           "session_id": self.session_id,
+                           "collector_run_id": self.collector_run_id,
+                           "event_id": self._next_event_id("pre-round"),
+                           **snapshot})
         self._last_snapshot_round = rid
+
+    def _next_event_id(self, prefix: str) -> str:
+        self._event_index += 1
+        return f"{self.session_id}:{prefix}:{self._event_index}"
+
+    def _provenance(self, *, received_at=None, received_monotonic=None, event_id=None,
+                    frame_id=None, frame_index=None, packet_index=None,
+                    packet_offset=None, packet_end=None) -> dict:
+        return {
+            "session_id": self.session_id,
+            "collector_run_id": self.collector_run_id,
+            "event_id": event_id,
+            "received_at": received_at,
+            "received_monotonic": received_monotonic,
+            "timestamp_provenance": "collector_received_at" if received_at is not None else "absent",
+            "frame_id": frame_id,
+            "frame_index": frame_index,
+            "packet_index": packet_index,
+            "packet_offset": packet_offset,
+            "packet_end": packet_end,
+        }
 
     # --------------------------------------------------------------- frames
     def on_binary_frame(self, data: bytes, ws_url: str) -> None:
         received_at = time.time()
+        received_monotonic = time.monotonic()
         self._frame_index += 1
         frame_index = self._frame_index
         inter_arrival_ms = (
@@ -171,22 +240,36 @@ class Collector:
         )
         self._last_frame_received_at = received_at
         summary = binary_summary(data)
+        frame_id = f"{self.session_id}:frame:{frame_index}"
+        frame_event_id = self._next_event_id(f"frame{frame_index}")
+        raw_b64 = base64.b64encode(bytes(data)).decode("ascii")
         self.netlog.write({
-            "kind": "ws_binary_frame",
-            "url": safe_url(ws_url),
-            "frame_index": frame_index,
-            "received_at": received_at,
+            "kind": "ws_binary_frame", "schema_version": 3,
+            "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+            "event_id": frame_event_id, "frame_id": frame_id,
+            "url": safe_url(ws_url), "frame_index": frame_index,
+            "received_at": received_at, "received_monotonic": received_monotonic,
+            "timestamp_provenance": "collector_received_at",
             "inter_arrival_ms": inter_arrival_ms,
-            **summary,
+            "encoding": "base64", "payload_b64": raw_b64, "payload_complete": True,
+            "compression": "unknown", **summary,
         })
         res = self.decoder.decode_frame(data)
         if not res.decoder_available:
-            self.netlog.write({"kind": "ws_binary_undecoded", "url": safe_url(ws_url),
-                               "frame_index": frame_index, **summary})
+            self.netlog.write({"kind": "ws_binary_undecoded", "schema_version": 3,
+                               "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+                               "event_id": frame_event_id, "frame_id": frame_id,
+                               "url": safe_url(ws_url), "frame_index": frame_index,
+                               "received_at": received_at, "received_monotonic": received_monotonic,
+                               "timestamp_provenance": "collector_received_at",
+                               "encoding": "base64", "payload_b64": raw_b64,
+                               "payload_complete": True, "decode_status": "unavailable", **summary})
             return
         for packet_index, ((cmd, params), span) in enumerate(zip(res.commands, res.packet_spans)):
             self.netlog.write({
-                "kind": "sfs_decoded",
+                "kind": "sfs_decoded", "schema_version": 3,
+                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+                "event_id": f"{frame_id}:packet:{packet_index}", "frame_id": frame_id,
                 "url": safe_url(ws_url),
                 "command": cmd,
                 "params": params,
@@ -196,7 +279,8 @@ class Collector:
                 "packet_end": span["end"],
                 "packet_size": span["length"],
                 "frame_size": len(data),
-                "received_at": received_at,
+                "received_at": received_at, "received_monotonic": received_monotonic,
+                "timestamp_provenance": "collector_received_at",
                 "inter_arrival_ms": inter_arrival_ms,
             })
             self._capture_event(
@@ -208,36 +292,120 @@ class Collector:
             )
             self._maybe_snapshot(cmd, params, received_at)
             try:
-                self.tracker.handle(cmd, params, origin="py-sfs")
+                self.tracker.handle(
+                    cmd, params, origin="py-sfs",
+                    evidence_context=self._provenance(
+                        received_at=received_at, received_monotonic=received_monotonic,
+                        event_id=f"{frame_id}:packet:{packet_index}", frame_id=frame_id,
+                        frame_index=frame_index, packet_index=packet_index,
+                        packet_offset=span["offset"], packet_end=span["end"],
+                    ),
+                )
             except Exception as exc:
                 self.netlog.write({"kind": "tracker_error", "command": cmd, "error": f"{type(exc).__name__}: {exc}"})
-        if res.error or res.leftover:
-            self.netlog.write({"kind": "sfs_decode_error", "url": safe_url(ws_url), "error": res.error,
-                               "packets": res.packets, "leftover": res.leftover,
-                               "frame_index": frame_index, **summary})
+        if res.error or res.leftover or res.packet_limit_reached:
+            self.netlog.write({
+                "kind": "sfs_decode_error", "schema_version": 3,
+                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id(f"frame{frame_index}:decode"),
+                "frame_id": frame_id, "url": safe_url(ws_url),
+                "error": res.error, "error_stage": res.error_stage,
+                "decode_status": res.decode_status, "packets": res.packets,
+                "packet_limit_reached": res.packet_limit_reached,
+                "packet_limit": self.decoder.max_packets,
+                "consumed_bytes": res.consumed, "remaining_bytes": res.leftover,
+                "remaining_sha256": res.remaining_sha256, "remaining_b64": res.remaining_b64,
+                "frame_index": frame_index, "received_at": received_at,
+                "received_monotonic": received_monotonic,
+                "timestamp_provenance": "collector_received_at",
+                "encoding": "base64", "payload_b64": raw_b64, "payload_complete": True,
+                **summary,
+            })
 
     def on_text_frame(self, text: str, ws_url: str) -> None:
         if self.cfg["log_text_frames"]:
+            limit = 20000
+            retained = text[:limit]
             self.netlog.write({"kind": "ws_text", "url": safe_url(ws_url), "length": len(text),
-                               "payload": text[:20000]})
+                               "payload": retained,
+                               "payload_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                               "payload_complete": len(text) <= limit,
+                               "truncated": len(text) > limit,
+                               "truncation_limit": limit if len(text) > limit else None,
+                               "retained_length": len(retained)})
 
     def on_browser_events(self, events: list) -> None:
         for ev in events or []:
+            arrival_at = time.time()
+            raw_t = ev.get("t") if isinstance(ev, dict) else None
+            browser_timestamp = None
+            if raw_t is not None:
+                try:
+                    browser_timestamp = float(raw_t) / 1000.0
+                except (TypeError, ValueError):
+                    browser_timestamp = None
+            timestamp_provenance = "browser_date_now" if browser_timestamp is not None else "collector_received_at"
+            browser_event_id = self._next_event_id("browser")
+            self.netlog.write({
+                "kind": "browser_event",
+                "schema_version": 3,
+                "session_id": self.session_id,
+                "collector_run_id": self.collector_run_id,
+                "event_id": browser_event_id,
+                "received_at": arrival_at,
+                "timestamp": browser_timestamp,
+                "timestamp_provenance": timestamp_provenance,
+                "raw_event": ev,
+            })
+            if isinstance(ev, dict) and ev.get("event_type") == "browserQueueOverflow":
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                self.netlog.write({
+                    "kind": "browser_queue_overflow",
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": self._next_event_id("browser-overflow"),
+                    "dropped_count": data.get("dropped_count"),
+                    "queue_limit": data.get("queue_limit", 2000),
+                    "received_at": arrival_at,
+                    "timestamp": browser_timestamp,
+                    "timestamp_provenance": timestamp_provenance,
+                })
+                continue
             unwrapped = unwrap_browser_event(ev)
             if unwrapped is None:
+                self.netlog.write({
+                    "kind": "browser_event_unhandled",
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": self._next_event_id("browser-unhandled"),
+                    "raw_event": ev,
+                })
                 continue
             cmd, params = unwrapped
-            raw_t = ev.get("t") if isinstance(ev, dict) else None
+            event_timestamp = browser_timestamp if browser_timestamp is not None else arrival_at
+            self._capture_event(timestamp=event_timestamp, source="js-sfs", command=cmd, params=params)
+            self._maybe_snapshot(cmd, params, event_timestamp)
             try:
-                timestamp = float(raw_t) / 1000.0 if raw_t is not None else time.time()
-            except (TypeError, ValueError):
-                timestamp = time.time()
-            self._capture_event(timestamp=timestamp, source="js-sfs", command=cmd, params=params)
-            self._maybe_snapshot(cmd, params, timestamp)
-            try:
-                self.tracker.handle(cmd, params, origin="js-sfs")
+                self.tracker.handle(
+                    cmd, params, origin="js-sfs",
+                    evidence_context={
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": browser_event_id,
+                        "received_at": event_timestamp,
+                        "received_monotonic": time.monotonic(),
+                        "timestamp_provenance": timestamp_provenance,
+                    },
+                )
             except Exception as exc:
-                self.netlog.write({"kind": "tracker_error", "command": cmd, "error": f"{type(exc).__name__}: {exc}"})
+                self.netlog.write({
+                    "kind": "tracker_error",
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": self._next_event_id("tracker-error"),
+                    "command": cmd,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
 
     # ------------------------------------------------------------- fairness
     async def maybe_open_fairness(self, context) -> None:
@@ -741,6 +909,8 @@ class Collector:
         self.pre_round.clear()
         self._last_snapshot_round = None
         self._last_frame_received_at = None
+        self.collector_run_id = uuid.uuid4().hex
+        self._event_index = 0
         from playwright.async_api import async_playwright  # imported lazily (optional in tests)
         profile = self.cfg.path("chrome_profile_dir")
         profile.mkdir(parents=True, exist_ok=True)
@@ -753,7 +923,8 @@ class Collector:
 
                 def on_ws(ws):
                     url = ws.url
-                    self.netlog.write({"kind": "ws_open", "url": safe_url(url)})
+                    self.netlog.write({"kind": "ws_open", "session_id": self.session_id,
+                                       "collector_run_id": self.collector_run_id, "url": safe_url(url)})
 
                     def received(payload):
                         try:
@@ -762,9 +933,15 @@ class Collector:
                             else:
                                 self.on_text_frame(str(payload), url)
                         except Exception as exc:
-                            self.netlog.write({"kind": "frame_handler_error", "error": str(exc)})
+                            self.netlog.write({"kind": "frame_handler_error",
+                                               "session_id": self.session_id,
+                                               "collector_run_id": self.collector_run_id,
+                                               "error": f"{type(exc).__name__}: {exc}"})
                     ws.on("framereceived", received)
-                    ws.on("close", lambda *_: self.netlog.write({"kind": "ws_close", "url": safe_url(url)}))
+                    ws.on("close", lambda *_: self.netlog.write({"kind": "ws_close",
+                                                                    "session_id": self.session_id,
+                                                                    "collector_run_id": self.collector_run_id,
+                                                                    "url": safe_url(url)}))
 
                 def on_response(resp):
                     try:

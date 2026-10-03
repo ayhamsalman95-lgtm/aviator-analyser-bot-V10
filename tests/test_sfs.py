@@ -55,6 +55,10 @@ class FrameTests(unittest.TestCase):
             col.decoder._decode = None
             col._frame_index = 0
             col._last_frame_received_at = None
+            col._last_snapshot_round = None
+            col.session_id = "test-session"
+            col.collector_run_id = "test-run"
+            col._event_index = 0
             payload = b'{"roundId": 9, "serverSeed": "SeedSeedSeed1234", "maxMultiplier": 2.0}'
             col.on_binary_frame(payload, "wss://x")
             self.assertEqual(p.store.round_count(), 0)

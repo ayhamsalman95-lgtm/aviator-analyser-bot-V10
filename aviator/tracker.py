@@ -70,27 +70,29 @@ class RoundTracker:
                 "last_completed_id": self.last_completed_id, "counters": dict(self.counters)}
 
     # ------------------------------------------------------------ dispatch
-    def handle(self, cmd: Optional[str], params: Any, origin: str = "sfs") -> str:
+    def handle(self, cmd: Optional[str], params: Any, origin: str = "sfs",
+               evidence_context: Optional[dict[str, Any]] = None) -> str:
         self.last_event_at = self.clock()
-        n = norm(cmd or "")
+        n = norm(cmd) if isinstance(cmd, str) else ""
         self.counters[f"cmd:{n or 'none'}"] += 1
         if n in IGNORED_COMMANDS or not n:
             return "ignored"
         if n == "roundchartinfo":
-            return self._on_round_result(params, origin)
+            return self._on_round_result(params, origin, evidence_context)
         if n == "changestate":
             return self._on_change_state(params, origin)
         if n == "init":
             result = self._on_init(params, origin)
-            self._fairness_from(params, f"{origin}:init")
+            self._fairness_from(params, f"{origin}:init", evidence_context)
             return result
         if n == "serverseedresponse":
-            return self._on_server_seed_response(params, origin)
-        stored = self._fairness_from(params, f"{origin}:{cmd}")
+            return self._on_server_seed_response(params, origin, evidence_context)
+        stored = self._fairness_from(params, f"{origin}:{cmd}", evidence_context)
         return f"fairness:{stored}" if stored else "unhandled"
 
     # --------------------------------------------------------- round result
-    def _on_round_result(self, params: Any, origin: str) -> str:
+    def _on_round_result(self, params: Any, origin: str,
+                         evidence_context: Optional[dict[str, Any]] = None) -> str:
         chart = params if isinstance(params, dict) else {}
         rid_raw = chart.get("roundId", chart.get("round_id"))
         mult_raw = chart.get("maxMultiplier", chart.get("max_multiplier"))
@@ -100,7 +102,7 @@ class RoundTracker:
             self._log("sfs_round_result_invalid", keys=sorted(map(str, chart.keys())))
             return "invalid"
         status = self.store.insert_round(rid_raw, mult_raw, source="sfs:roundChartInfo",
-                                         origin="live", raw=chart)
+                                         origin="live", raw=chart, provenance=evidence_context)
         self.counters[f"round:{status}"] += 1
         if status == "inserted":
             rid = int(rid_raw)
@@ -176,8 +178,9 @@ class RoundTracker:
         return f"init:{inserted}/{dup}/{bad}"
 
     # ------------------------------------------------------------- fairness
-    def _on_server_seed_response(self, params: Any, origin: str) -> str:
-        stored = self._fairness_from(params, f"{origin}:serverSeedResponse")
+    def _on_server_seed_response(self, params: Any, origin: str,
+                                  evidence_context: Optional[dict[str, Any]] = None) -> str:
+        stored = self._fairness_from(params, f"{origin}:serverSeedResponse", evidence_context)
         if not stored:
             self._log("sfs_fairness_response_empty",
                       keys=sorted(map(str, params.keys())) if isinstance(params, dict) else [],
@@ -185,24 +188,35 @@ class RoundTracker:
             return "fairness_empty"
         return f"fairness:{stored}"
 
-    def _fairness_from(self, params: Any, source: str) -> int:
+    def _fairness_from(self, params: Any, source: str,
+                       evidence_context: Optional[dict[str, Any]] = None) -> int:
         stored = 0
         for rec in extract_fairness(params):
+            if rec.scan_truncated:
+                self._log("fairness_scan_truncated", source=source, path=rec.path,
+                          max_nodes=rec.scan_limit, list_truncations=rec.list_truncations)
+                continue
             explicit = rec.round_id is not None and not rec.is_next_commitment
             assoc = "explicit" if explicit else "unassociated"
             rid = rec.round_id if explicit else None
             ctx = self.current_round_id
             src = f"{source}{rec.path}"
             if rec.server_seed:
-                stored += self.store.add_fairness_evidence("server_seed", rec.server_seed, src, rid, assoc, ctx)
+                stored += self.store.add_fairness_evidence("server_seed", rec.server_seed, src, rid, assoc, ctx, provenance=evidence_context)
             if rec.player_seeds:
-                stored += self.store.add_fairness_evidence("player_seeds", rec.player_seeds, src, rid, assoc, ctx)
+                stored += self.store.add_fairness_evidence("player_seeds", rec.player_seeds, src, rid, assoc, ctx, provenance=evidence_context)
             if rec.commitment:
                 stored += self.store.add_fairness_evidence("commitment_sha256", rec.commitment, src, rid,
-                                                           assoc, ctx)
+                                                           assoc, ctx, provenance=evidence_context)
             if rec.round_hash:
                 stored += self.store.add_fairness_evidence("round_hash_sha512", rec.round_hash, src, rid,
-                                                           assoc, ctx)
+                                                           assoc, ctx, provenance=evidence_context)
+            for obs in rec.crypto_observations:
+                stored += int(self.store.add_crypto_observation(
+                    round_id=rid, association=assoc, field_name=obs["field_name"],
+                    value=obs["value"], algorithm=obs.get("algorithm"),
+                    semantic_type=obs.get("semantic_type", "unknown"),
+                    source=src, context_round_id=ctx, provenance=evidence_context))
         if stored:
             self.counters["fairness:stored"] += stored
         return stored

@@ -23,7 +23,7 @@ from .fairness import verify_round
 from .jsonl import append_jsonl
 from .validation import RoundValidationError, validate_round
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -61,6 +61,34 @@ CREATE TABLE IF NOT EXISTS fairness_evidence (
     evidence_key TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS ix_fe_round ON fairness_evidence(round_id, association);
+CREATE TABLE IF NOT EXISTS evidence_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id INTEGER,
+    association TEXT NOT NULL,
+    evidence_kind TEXT NOT NULL,
+    field_name TEXT,
+    value TEXT NOT NULL,
+    algorithm TEXT,
+    semantic_type TEXT,
+    source TEXT NOT NULL,
+    context_round_id INTEGER,
+    received_at REAL,
+    received_monotonic REAL,
+    timestamp_provenance TEXT,
+    session_id TEXT,
+    collector_run_id TEXT,
+    event_id TEXT,
+    source_file TEXT,
+    source_line INTEGER,
+    frame_id TEXT,
+    frame_index INTEGER,
+    packet_index INTEGER,
+    packet_offset INTEGER,
+    packet_end INTEGER,
+    observed_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_eo_round ON evidence_observations(round_id, association);
+CREATE INDEX IF NOT EXISTS ix_eo_frame ON evidence_observations(frame_id, packet_index);
 CREATE TABLE IF NOT EXISTS fairness_verification (
     round_id INTEGER PRIMARY KEY,
     status TEXT NOT NULL,
@@ -209,7 +237,8 @@ class Store:
 
     # ----------------------------------------------------------------- rounds
     def insert_round(self, round_id: Any, multiplier: Any, source: str, origin: str = "live",
-                     raw: Any = None, notify: bool = True, seen_at: Optional[float] = None) -> str:
+                     raw: Any = None, notify: bool = True, seen_at: Optional[float] = None,
+                     provenance: Optional[dict[str, Any]] = None) -> str:
         """Persist a completed round immediately.
 
         Returns 'inserted', 'duplicate' or one of 'invalid:<reason>' / 'conflict'.
@@ -241,6 +270,11 @@ class Store:
                     self.conn.execute("UPDATE rounds SET corroborations=corroborations+1, "
                                       "corroborating_sources=? WHERE round_id=?",
                                       (json.dumps(sources), v.round_id))
+                self.add_evidence_observation(
+                    round_id=v.round_id, association="explicit", evidence_kind="round_result",
+                    field_name="maxMultiplier", value={"round_id": v.round_id, "multiplier": v.multiplier},
+                    source=source, provenance=provenance,
+                )
                 self.conn.execute("COMMIT")
                 return "duplicate"
             seq = self.conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM rounds").fetchone()[0]
@@ -252,6 +286,11 @@ class Store:
             if notify:
                 self._outbox_insert(f"result:{v.round_id}", "round_completed", v.round_id,
                                     {"round_id": v.round_id, "multiplier": v.multiplier, "source": source})
+            self.add_evidence_observation(
+                round_id=v.round_id, association="explicit", evidence_kind="round_result",
+                field_name="maxMultiplier", value={"round_id": v.round_id, "multiplier": v.multiplier},
+                source=source, provenance=provenance,
+            )
             self.conn.execute("COMMIT")
         except Exception:
             self.conn.execute("ROLLBACK")
@@ -291,7 +330,8 @@ class Store:
 
     # --------------------------------------------------------------- fairness
     def add_fairness_evidence(self, kind: str, value: Any, source: str, round_id: Optional[int],
-                              association: str, context_round_id: Optional[int] = None) -> bool:
+                              association: str, context_round_id: Optional[int] = None,
+                              provenance: Optional[dict[str, Any]] = None) -> bool:
         assert kind in {"server_seed", "player_seeds", "commitment_sha256", "round_hash_sha512"}
         assert association in {"explicit", "unassociated", "legacy_unproven"}
         if association == "explicit" and round_id is None:
@@ -308,14 +348,58 @@ class Store:
             "INSERT OR IGNORE INTO fairness_evidence(round_id,association,kind,value,source,"
             "context_round_id,received_at,evidence_key) VALUES(?,?,?,?,?,?,?,?)",
             (round_id_stored, association, kind, value_text, source, context_round_id, now, key))
-        if not cur.rowcount:
+        inserted = bool(cur.rowcount)
+        if inserted:
+            append_jsonl(self.fairness_jsonl, {"round_id": round_id_stored, "association": association,
+                                                "kind": kind, "value": value, "source": source,
+                                                "context_round_id": context_round_id, "received_at": now})
+        # Canonical fairness_evidence remains deduplicated, but every observation
+        # retains its independent provenance in evidence_observations.
+        self.add_evidence_observation(
+            round_id=round_id_stored, association=association, evidence_kind=kind,
+            field_name=kind, value=value, source=source, context_round_id=context_round_id,
+            provenance=provenance,
+        )
+        if not inserted:
             return False
-        append_jsonl(self.fairness_jsonl, {"round_id": round_id_stored, "association": association,
-                                            "kind": kind, "value": value, "source": source,
-                                            "context_round_id": context_round_id, "received_at": now})
         if association == "explicit":
             self.reverify(round_id_stored)
         return True
+
+    def add_evidence_observation(
+        self, *, round_id: Optional[int], association: str, evidence_kind: str,
+        field_name: Optional[str], value: Any, source: str,
+        context_round_id: Optional[int] = None, algorithm: Optional[str] = None,
+        semantic_type: Optional[str] = None, provenance: Optional[dict[str, Any]] = None,
+    ) -> int:
+        p = provenance or {}
+        value_text = json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value)
+        cur = self.conn.execute(
+            "INSERT INTO evidence_observations("
+            "round_id,association,evidence_kind,field_name,value,algorithm,semantic_type,source,"
+            "context_round_id,received_at,received_monotonic,timestamp_provenance,session_id,collector_run_id,event_id,"
+            "source_file,source_line,frame_id,frame_index,packet_index,packet_offset,packet_end,observed_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                round_id, association, evidence_kind, field_name, value_text, algorithm, semantic_type, source,
+                context_round_id, p.get("received_at"), p.get("received_monotonic"), p.get("timestamp_provenance"),
+                p.get("session_id"), p.get("collector_run_id"), p.get("event_id"),
+                p.get("source_file"), p.get("source_line"), p.get("frame_id"), p.get("frame_index"),
+                p.get("packet_index"), p.get("packet_offset"), p.get("packet_end"), self.clock(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def add_crypto_observation(
+        self, *, round_id: Optional[int], association: str, field_name: str, value: Any,
+        algorithm: Optional[str], semantic_type: str, source: str,
+        context_round_id: Optional[int] = None, provenance: Optional[dict[str, Any]] = None,
+    ) -> int:
+        return self.add_evidence_observation(
+            round_id=round_id, association=association, evidence_kind="cryptographic_observation",
+            field_name=field_name, value=value, algorithm=algorithm, semantic_type=semantic_type,
+            source=source, context_round_id=context_round_id, provenance=provenance,
+        )
 
     def evidence_for_round(self, round_id: int) -> dict[str, list]:
         out = {"server_seed": [], "player_seeds": [], "commitment_sha256": [], "round_hash_sha512": []}
