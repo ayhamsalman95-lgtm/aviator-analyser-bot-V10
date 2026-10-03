@@ -132,7 +132,7 @@ def extract_fairness(data: Any, max_nodes: int = 2000) -> list[FairnessRecord]:
             for i, v in enumerate(node[:500]):
                 if isinstance(v, (dict, list)):
                     stack.append((v, f"{path}[{i}]"))
-    scan_truncated = bool(stack) or nodes >= max_nodes or list_truncations > 0
+    scan_truncated = bool(stack) or list_truncations > 0
     if scan_truncated:
         out.append(FairnessRecord(path="$.__scan__", scan_truncated=True,
                                   scan_limit=max_nodes, list_truncations=list_truncations))
