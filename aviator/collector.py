@@ -247,6 +247,7 @@ class Collector:
             "session_id": self.session_id,
             "collector_run_id": self.collector_run_id,
             "event_id": event_id,
+            "raw_evidence_ref": frame_id or event_id,
             "received_at": received_at,
             "received_monotonic": received_monotonic,
             "timestamp_provenance": "collector_received_at" if received_at is not None else "absent",
