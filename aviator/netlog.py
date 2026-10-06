@@ -65,10 +65,13 @@ class RotatingJsonlLog:
 
     def _rotate(self) -> dict:
         dropped_backup = None
+        dropped_backup_size = None
+        old_file_size = self.path.stat().st_size if self.path.exists() else None
         if self.backups > 0:
             dropped = self.path.with_name(f"{self.path.name}.{self.backups}")
             if dropped.exists():
                 dropped_backup = str(dropped)
+                dropped_backup_size = dropped.stat().st_size
         for i in range(self.backups - 1, 0, -1):
             src = self.path.with_name(f"{self.path.name}.{i}")
             dst = self.path.with_name(f"{self.path.name}.{i + 1}")
@@ -79,15 +82,16 @@ class RotatingJsonlLog:
         else:
             self.path.unlink()
         self.rotation_events += 1
-        if dropped_backup is not None:
-            self.records_dropped += 1
         return {
             "old_file": str(self.path),
+            "old_file_size": old_file_size,
             "archived_file": str(self.path.with_name(f"{self.path.name}.1")) if self.backups > 0 else None,
             "active_file": str(self.path),
             "max_bytes": self.max_bytes,
             "backups": self.backups,
             "dropped_backup": dropped_backup,
+            "dropped_backup_size": dropped_backup_size,
+            "evidence_loss": bool(dropped_backup),
             "reason": "size_limit",
             "rotation_index": self.rotation_events,
         }
@@ -125,6 +129,7 @@ class RotatingJsonlLog:
                 if not self._write_line(rotation_line):
                     self.records_failed += 1
                     return False
+                self.records_persisted += 1
             ok = self._write_line(line)
             if ok:
                 self.records_persisted += 1
