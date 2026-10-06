@@ -212,7 +212,7 @@ class RoundTracker:
                 stored += self.store.add_fairness_evidence("round_hash_sha512", rec.round_hash, src, rid,
                                                            assoc, ctx, provenance=evidence_context)
             for obs in rec.crypto_observations:
-                stored += int(self.store.add_crypto_observation(
+                self.store.add_crypto_observation(
                     round_id=rid, association=assoc, field_name=obs["field_name"],
                     value=obs["value"], algorithm=obs.get("algorithm"),
                     semantic_type=obs.get("semantic_type", "unknown"),
