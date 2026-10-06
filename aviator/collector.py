@@ -192,8 +192,9 @@ class Collector:
     def _capture_event(self, *, timestamp, source, command, params,
                        frame_index=None, packet_index=None, frame_size=None,
                        packet_size=None, packet_offset=None, packet_end=None,
-                       inter_arrival_ms=None):
-        self.pre_round.add(ObservableEvent(
+                       inter_arrival_ms=None, event_id=None):
+        dropped = self.pre_round.add(ObservableEvent(
+            event_id=event_id,
             timestamp=timestamp,
             source=source,
             command=command,
@@ -208,6 +209,17 @@ class Collector:
             inter_arrival_ms=inter_arrival_ms,
             payload=params,
         ))
+        if dropped is not None:
+            dropped_seq = {"frame_index": dropped.frame_index, "packet_index": dropped.packet_index, "event_id": dropped.event_id}
+            self.netlog.write({
+                "kind": "pre_round_buffer_overflow", "schema_version": 3,
+                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id("pre-round-overflow"),
+                "queue_name": "PreRoundBuffer", "capacity": self.pre_round.max_events,
+                "dropped_count": 1, "first_dropped": dropped_seq, "last_dropped": dropped_seq,
+                "dropped_total": self.pre_round.dropped_total, "timestamp": timestamp,
+                "timestamp_provenance": "collector_received_at", "recoverability": "raw_network_evidence",
+            })
 
     def _maybe_snapshot(self, command, params, timestamp):
         if str(command or "").replace("_", "").lower() != "changestate":
@@ -306,6 +318,7 @@ class Collector:
                 frame_size=len(data), packet_size=span["length"],
                 packet_offset=span["offset"], packet_end=span["end"],
                 inter_arrival_ms=inter_arrival_ms,
+                event_id=f"{frame_id}:packet:{packet_index}",
             )
             self._maybe_snapshot(cmd, params, received_at)
             try:
@@ -438,7 +451,10 @@ class Collector:
                 continue
             cmd, params = unwrapped
             event_timestamp = browser_timestamp if browser_timestamp is not None else arrival_at
-            self._capture_event(timestamp=event_timestamp, source="js-sfs", command=cmd, params=params)
+            self._capture_event(
+                timestamp=event_timestamp, source="js-sfs", command=cmd, params=params,
+                event_id=browser_event_id,
+            )
             self._maybe_snapshot(cmd, params, event_timestamp)
             try:
                 self.tracker.handle(
