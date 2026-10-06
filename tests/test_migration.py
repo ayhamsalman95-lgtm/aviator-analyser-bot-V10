@@ -1,6 +1,7 @@
 import hashlib
 import json
 import shutil
+import sqlite3
 import unittest
 
 from tests.helpers import FIXTURES, TempProject
@@ -67,6 +68,60 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(self.p.store.round_count(), 6)
         self.assertEqual(self.p.store.conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0], q1)
         self.assertEqual(len(list(read_jsonl(self.p.store.rounds_jsonl))), 6)
+
+    def test_schema_migration_preserves_legacy_fairness_evidence(self):
+        db_path = self.p.dir / "legacy.sqlite3"
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO meta(key,value) VALUES('schema_version','2');
+            CREATE TABLE fairness_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                round_id INTEGER,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                source TEXT NOT NULL,
+                received_at REAL NOT NULL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO fairness_evidence(round_id,kind,value,source,received_at) VALUES(?,?,?,?,?)",
+            (123, "server_seed", "legacy-value", "legacy", 100.0),
+        )
+        conn.commit()
+        conn.close()
+
+        store = Store(
+            db_path,
+            self.p.cfg.structured_dir,
+            self.p.cfg.batches_dir,
+            batch_size=int(self.p.cfg["batch_size"]),
+            clock=self.p.clock,
+        )
+        try:
+            row = store.conn.execute(
+                "SELECT round_id,kind,value,association FROM fairness_evidence"
+            ).fetchone()
+            self.assertEqual(dict(row), {
+                "round_id": 123,
+                "kind": "server_seed",
+                "value": "legacy-value",
+                "association": "legacy_unproven",
+            })
+            obs = store.conn.execute(
+                "SELECT evidence_kind,value,association FROM evidence_observations"
+            ).fetchall()
+            self.assertEqual(len(obs), 1)
+            self.assertEqual(obs[0]["value"], "legacy-value")
+            self.assertEqual(obs[0]["association"], "legacy_unproven")
+            self.assertEqual(store.get_meta("schema_version"), "3")
+            self.assertIsNotNone(
+                store.conn.execute(
+                    "SELECT version FROM schema_migrations WHERE version=3"
+                ).fetchone()
+            )
+        finally:
+            store.close()
 
     def test_repair_appends_missing_jsonl_only(self):
         self.run_migration()
