@@ -27,7 +27,7 @@ class ReplayTests(unittest.TestCase):
         r = self.run_replay()
         self.assertEqual(r[0], "init:2/0/2")                 # backfill: 2 valid, 2 quarantined
         self.assertEqual(r[1], "prediction_frozen")          # cutoff at newStateId=1
-        self.assertEqual(r[2], "fairness:0")                 # serverSeedSHA256 is preserved as a neutral crypto observation
+        self.assertEqual(r[2], "fairness_empty")             # serverSeedSHA256 is preserved as neutral crypto evidence, not fairness evidence
         self.assertEqual(r[4], "ignored")                    # cashout multipliers never results
         self.assertEqual(r[7], "inserted")                   # roundChartInfo for 5000003
         self.assertEqual(r[8], "duplicate")
