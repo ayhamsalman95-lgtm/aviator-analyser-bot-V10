@@ -23,10 +23,11 @@ from .fairness import verify_round
 from .jsonl import append_jsonl
 from .validation import RoundValidationError, validate_round
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS rounds (
     round_id INTEGER PRIMARY KEY,
     multiplier REAL NOT NULL,
@@ -175,8 +176,54 @@ class Store:
         self.conn.execute("PRAGMA synchronous=FULL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=30000")
+        previous = self.get_meta("schema_version")
+        try:
+            previous_version = int(previous) if previous is not None else 0
+        except (TypeError, ValueError):
+            previous_version = 0
         self.conn.executescript(SCHEMA)
+        self._migrate_schema(previous_version)
         self.set_meta("schema_version", str(SCHEMA_VERSION))
+
+    def _table_columns(self, table: str) -> set[str]:
+        rows = self.conn.execute("PRAGMA table_info(" + table + ")").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _migrate_schema(self, previous_version: int) -> None:
+        """Apply additive, data-preserving migrations explicitly."""
+        if previous_version >= SCHEMA_VERSION:
+            return
+        if previous_version < 3:
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS evidence_observations ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, association TEXT NOT NULL, "
+                "evidence_kind TEXT NOT NULL, field_name TEXT, value TEXT NOT NULL, algorithm TEXT, "
+                "semantic_type TEXT, source TEXT NOT NULL, context_round_id INTEGER, received_at REAL, "
+                "received_monotonic REAL, timestamp_provenance TEXT, session_id TEXT, collector_run_id TEXT, "
+                "event_id TEXT, source_file TEXT, source_line INTEGER, frame_id TEXT, frame_index INTEGER, "
+                "packet_index INTEGER, packet_offset INTEGER, packet_end INTEGER, observed_at REAL NOT NULL)"
+            )
+            self.conn.execute("CREATE INDEX IF NOT EXISTS ix_eo_round ON evidence_observations(round_id, association)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS ix_eo_frame ON evidence_observations(frame_id, packet_index)")
+            fe_cols = self._table_columns("fairness_evidence")
+            if "association" not in fe_cols:
+                self.conn.execute("ALTER TABLE fairness_evidence ADD COLUMN association TEXT NOT NULL DEFAULT 'legacy_unproven'")
+            if "context_round_id" not in fe_cols:
+                self.conn.execute("ALTER TABLE fairness_evidence ADD COLUMN context_round_id INTEGER")
+            if "evidence_key" not in fe_cols:
+                self.conn.execute("ALTER TABLE fairness_evidence ADD COLUMN evidence_key TEXT")
+            rows = self.conn.execute("SELECT id,round_id,association,kind,value,context_round_id,evidence_key,source,received_at FROM fairness_evidence").fetchall()
+            for row in rows:
+                key = row["evidence_key"]
+                if key is None:
+                    key = _sha256_json([row["round_id"], row["association"], row["kind"], row["value"], row["context_round_id"] if row["association"] == "unassociated" else None])
+                    self.conn.execute("UPDATE fairness_evidence SET evidence_key=? WHERE id=?", (key, row["id"]))
+                self.conn.execute(
+                    "INSERT INTO evidence_observations(round_id,association,evidence_kind,field_name,value,source,context_round_id,received_at,observed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (row["round_id"], row["association"], row["kind"], row["kind"], row["value"], row["source"], row["context_round_id"], row["received_at"], row["received_at"]),
+                )
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_fe_evidence_key ON fairness_evidence(evidence_key)")
+        self.conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)", (SCHEMA_VERSION, self.clock()))
 
     @classmethod
     def from_config(cls, cfg) -> "Store":
