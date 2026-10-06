@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS fairness_evidence (
     received_at REAL NOT NULL,
     evidence_key TEXT NOT NULL UNIQUE
 );
-CREATE INDEX IF NOT EXISTS ix_fe_round ON fairness_evidence(round_id, association);
 CREATE TABLE IF NOT EXISTS evidence_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     round_id INTEGER,
@@ -228,6 +227,7 @@ class Store:
                 )
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_fe_evidence_key ON fairness_evidence(evidence_key)")
         self.conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)", (SCHEMA_VERSION, self.clock()))
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_fe_round ON fairness_evidence(round_id, association)")
 
     @classmethod
     def from_config(cls, cfg) -> "Store":
