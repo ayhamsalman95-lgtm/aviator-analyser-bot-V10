@@ -177,7 +177,8 @@ class Store:
         self.conn.execute("PRAGMA synchronous=FULL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=30000")
-        previous = self.get_meta("schema_version")
+        meta_exists = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+        previous = self.get_meta("schema_version") if meta_exists else None
         try:
             previous_version = int(previous) if previous is not None else 0
         except (TypeError, ValueError):
