@@ -182,6 +182,28 @@ class EvidencePipelineTests(unittest.TestCase):
         finally:
             p.cleanup()
 
+    def test_null_command_and_plain_init_are_preserved(self):
+        p = TempProject()
+        try:
+            source = p.dir / "network.jsonl"
+            output = p.dir / "derived.jsonl"
+            source.write_text(
+                "\n".join([
+                    json.dumps({"kind": "sfs_decoded", "command": None, "params": {"x": 1}, "received_at": 1.0}),
+                    json.dumps({"kind": "sfs_decoded", "command": "init", "params": {"foo": "bar"}, "received_at": 2.0}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            NetworkExtractor(source, output).extract()
+            rows = [json.loads(x) for x in output.read_text(encoding="utf-8").splitlines()]
+            null_rows = [r for r in rows if r.get("command") is None]
+            init_rows = [r for r in rows if r.get("classification") == "init"]
+            self.assertTrue(null_rows)
+            self.assertTrue(init_rows)
+            self.assertEqual(init_rows[0]["complete_params"], {"foo": "bar"})
+        finally:
+            p.cleanup()
+
     def test_http_fairness_classification_counted_once(self):
         p = TempProject()
         try:
