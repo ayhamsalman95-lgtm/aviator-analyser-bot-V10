@@ -116,6 +116,7 @@ class RotatingJsonlLog:
                 rotation = self._rotate()
             if rotation is not None:
                 event = {"kind": "network_log_rotation", "timestamp": time.time(),
+                         "timestamp_provenance": "log_time_only",
                          "session_id": record.get("session_id"),
                          "collector_run_id": record.get("collector_run_id"), **rotation}
                 rotation_line = json.dumps(
