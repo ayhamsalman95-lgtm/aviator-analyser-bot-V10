@@ -58,7 +58,7 @@ def multiplier_from_seeds(server_seed: str, player_seeds: list[str]) -> tuple[st
 @dataclass
 class Verification:
     round_id: int
-    status: str                      # verified | mismatch | incomplete | conflict
+    status: str                      # verified | mismatch | incomplete | conflict | not_verifiable
     verified: bool
     detail: str
     server_seed: Optional[str] = None
@@ -70,6 +70,7 @@ class Verification:
     recorded_cents: Optional[int] = None
     commitment_match: Optional[bool] = None
     panel_hash_match: Optional[bool] = None
+    verification_basis: str = "cryptographic_semantics_unestablished"
     formula: str = FORMULA
 
     def to_dict(self) -> dict:
@@ -83,11 +84,22 @@ def verify_round(
     player_seed_sets: list[list[str]],
     commitments: list[str],
     panel_hashes: list[str],
+    *,
+    evidence_semantics_confirmed: bool = False,
 ) -> Verification:
-    """Verify one round from the evidence explicitly associated with it.
+    """Verify one round only when the evidence semantics are explicitly established.
 
-    Multiple distinct values for the same field are a conflict: we never pick one.
+    The default is conservative: field names or digest lengths alone are not enough
+    to establish a commitment, round-hash, or multiplier-verification relationship.
     """
+    if not evidence_semantics_confirmed:
+        return Verification(
+            round_id=round_id,
+            status="not_verifiable",
+            verified=False,
+            detail="cryptographic evidence semantics are not established; observations preserved without verification",
+            recorded_cents=recorded_cents,
+        )
     server_set = sorted(set(server_seeds))
     seed_sets = []
     for s in player_seed_sets:
