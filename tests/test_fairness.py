@@ -27,9 +27,16 @@ class VerifyTests(unittest.TestCase):
     def v(self, cents=None, ss=None, seeds=None, commits=(), panels=()):
         return fairness.verify_round(1, VEC["cents"] if cents is None else cents,
                                      [VEC["server_seed"]] if ss is None else ss,
-                                     [VEC["player_seeds"]] if seeds is None else seeds, list(commits), list(panels))
+                                     [VEC["player_seeds"]] if seeds is None else seeds, list(commits), list(panels),
+                                     evidence_semantics_confirmed=True)
 
-    def test_verified_only_when_reproduced(self):
+    def test_verification_requires_explicit_semantics(self):
+        r = fairness.verify_round(1, VEC["cents"], [VEC["server_seed"]],
+                                  [VEC["player_seeds"]], [VEC["commitment_sha256"]], [VEC["sha512"]])
+        self.assertFalse(r.verified)
+        self.assertEqual(r.status, "not_verifiable")
+
+    def test_verified_only_when_reproduced_with_confirmed_semantics(self):
         r = self.v(commits=[VEC["commitment_sha256"]], panels=[VEC["sha512"]])
         self.assertTrue(r.verified)
         self.assertEqual(r.status, "verified")
@@ -81,18 +88,20 @@ class ExtractTests(unittest.TestCase):
         recs = extract_fairness({"roundId": 5, "nonce": 77, "serverSeed": "SeedSeedSeed1234"})
         self.assertFalse(hasattr(recs[0], "nonce"))
 
-    def test_seed_sha256_captured_as_round_hash(self):
+    def test_seed_sha256_is_neutral_observation(self):
         for value in ("a" * 64, "b" * 128):
             recs = extract_fairness({"roundId": 123, "seedSHA256": value})
             self.assertEqual(len(recs), 1)
             self.assertEqual(recs[0].round_id, 123)
-            self.assertEqual(recs[0].round_hash, value)
+            self.assertIsNone(recs[0].round_hash)
+            self.assertEqual(recs[0].crypto_observations[0]["semantic_type"], "unknown")
 
-    def test_sha512_round_hash_still_requires_128_hex(self):
+    def test_round_hash_named_field_is_neutral_without_protocol_semantics(self):
         value = "b" * 128
         recs = extract_fairness({"roundId": 124, "roundHashSha512": value})
         self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0].round_hash, value)
+        self.assertIsNone(recs[0].round_hash)
+        self.assertEqual(recs[0].crypto_observations[0]["algorithm"], "SHA-512")
 
 
 class StoreFairnessTests(unittest.TestCase):
@@ -106,20 +115,20 @@ class StoreFairnessTests(unittest.TestCase):
     def test_evidence_before_result_race(self):
         self.s.add_fairness_evidence("server_seed", VEC["server_seed"], "t", 55, "explicit")
         self.s.add_fairness_evidence("player_seeds", VEC["player_seeds"], "t", 55, "explicit")
-        self.assertEqual(self.s.get_verification(55)["status"], "incomplete")
+        self.assertEqual(self.s.get_verification(55)["status"], "not_verifiable")
         self.s.insert_round(55, VEC["cents"] / 100, "sfs:roundChartInfo")
         v = self.s.get_verification(55)
-        self.assertTrue(v["verified"])
-        self.assertTrue(v["locked"])
+        self.assertFalse(v["verified"])
+        self.assertFalse(v["locked"])
 
-    def test_verified_is_immutable(self):
+    def test_ambiguous_verification_is_not_locked(self):
         self.s.insert_round(55, VEC["cents"] / 100, "sfs:roundChartInfo")
         self.s.add_fairness_evidence("server_seed", VEC["server_seed"], "t", 55, "explicit")
         self.s.add_fairness_evidence("player_seeds", VEC["player_seeds"], "t", 55, "explicit")
-        self.assertTrue(self.s.get_verification(55)["verified"])
+        self.assertFalse(self.s.get_verification(55)["verified"])
         self.s.add_fairness_evidence("server_seed", "Different1234567", "late", 55, "explicit")
-        self.assertTrue(self.s.get_verification(55)["verified"])
-        self.assertIn("evidence_contradicts_verified_round", self.s.quarantine_counts())
+        self.assertFalse(self.s.get_verification(55)["verified"])
+        self.assertFalse(self.s.get_verification(55)["locked"])
 
     def test_wrong_early_value_can_be_corrected(self):
         # Old merge_seed_state kept the first seed_hash forever. Now a wrong
@@ -127,7 +136,7 @@ class StoreFairnessTests(unittest.TestCase):
         self.s.insert_round(56, VEC["cents"] / 100, "sfs:roundChartInfo")
         self.s.add_fairness_evidence("commitment_sha256", "b" * 64, "t", 56, "explicit")
         self.s.add_fairness_evidence("commitment_sha256", VEC["commitment_sha256"], "t", 56, "explicit")
-        self.assertEqual(self.s.get_verification(56)["status"], "conflict")
+        self.assertEqual(self.s.get_verification(56)["status"], "not_verifiable")
 
     def test_unassociated_never_used(self):
         self.s.insert_round(57, VEC["cents"] / 100, "sfs:roundChartInfo")
