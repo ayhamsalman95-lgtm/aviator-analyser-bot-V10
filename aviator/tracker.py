@@ -216,7 +216,7 @@ class RoundTracker:
                     round_id=rid, association=assoc, field_name=obs["field_name"],
                     value=obs["value"], algorithm=obs.get("algorithm"),
                     semantic_type=obs.get("semantic_type", "unknown"),
-                    source=src, context_round_id=ctx, provenance=evidence_context))
+                    source=src, context_round_id=ctx, provenance=evidence_context)
         if stored:
             self.counters["fairness:stored"] += stored
         return stored
