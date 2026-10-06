@@ -27,9 +27,21 @@ def safe_url(raw_url: str) -> str:
         return str(raw_url).split("?", 1)[0]
 
 
+PROVENANCE_KEYS = {
+    "session_id", "collector_run_id", "event_id", "frame_id", "frame_index",
+    "packet_index", "packet_offset", "packet_end", "source_file", "source_line",
+}
+
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: ("[redacted]" if SECRET_JSON_KEYS.search(str(k)) else redact(v)) for k, v in value.items()}
+        out = {}
+        for k, v in value.items():
+            key = str(k)
+            if key in PROVENANCE_KEYS:
+                out[k] = redact(v)
+            else:
+                out[k] = "[redacted]" if SECRET_JSON_KEYS.search(key) else redact(v)
+        return out
     if isinstance(value, list):
         return [redact(v) for v in value]
     if isinstance(value, (bytes, bytearray)):
