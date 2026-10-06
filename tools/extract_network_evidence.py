@@ -65,7 +65,10 @@ class NetworkExtractor:
         self.stats = {
             "total_lines": 0,
             "parsed": 0,
+            "prepared": 0,
             "written": 0,
+            "write_failures": 0,
+            "output_complete": False,
             "errors": 0,
             "sfs_decoded_count": 0,
             "sfs_message_count": 0,
@@ -456,7 +459,7 @@ class NetworkExtractor:
                     rec["source_record"] = line_data
                     rec_clean = redact_sensitive(rec)
                     chunk.append(rec_clean)
-                    self.stats["written"] += 1
+                    self.stats["prepared"] += 1
                     
                     # Count by classification
                     classification = rec.get("classification", "unknown")
@@ -466,7 +469,11 @@ class NetworkExtractor:
                 
                 # Write chunk if full
                 if len(chunk) >= self.chunk_size:
-                    self._write_chunk(chunk)
+                    try:
+                        self._write_chunk(chunk)
+                    except OSError as exc:
+                        self.stats["write_failures"] += 1
+                        raise RuntimeError(f"derived evidence write failed: {type(exc).__name__}: {exc}") from exc
                     chunk = []
             except Exception as e:
                 self.stats["errors"] += 1
@@ -486,21 +493,26 @@ class NetworkExtractor:
         
         # Write remaining chunk (CRITICAL: don't lose data at end)
         if chunk:
-            self._write_chunk(chunk)
-        
-        # Even if no records were extracted, create empty output file for consistency
-        if self.stats["written"] == 0 and not self.output_path.exists():
-            self.output_path.touch()
-        
+            try:
+                self._write_chunk(chunk)
+            except OSError as exc:
+                self.stats["write_failures"] += 1
+                raise RuntimeError(f"derived evidence write failed: {type(exc).__name__}: {exc}") from exc
+
+        self.stats["output_complete"] = True
         self.stats["end_time"] = time.time()
         return self.stats
 
     def _write_chunk(self, records: list[dict]) -> None:
-        """Write records for this extraction run only."""
+        """Write one complete chunk for this extraction run."""
         mode = "a" if self._output_initialized else "w"
         with open(self.output_path, mode, encoding="utf-8") as f:
             for rec in records:
                 f.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n")
+            f.flush()
+            import os
+            os.fsync(f.fileno())
+        self.stats["written"] += len(records)
 
     def report(self) -> str:
         """Generate extraction summary with complete classification breakdown."""
