@@ -430,7 +430,7 @@ class Store:
             "round_id,association,evidence_kind,field_name,value,algorithm,semantic_type,source,"
             "context_round_id,received_at,received_monotonic,timestamp_provenance,session_id,collector_run_id,event_id,"
             "source_file,source_line,frame_id,frame_index,packet_index,packet_offset,packet_end,raw_evidence_ref,observed_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 round_id, association, evidence_kind, field_name, value_text, algorithm, semantic_type, source,
                 context_round_id, p.get("received_at"), p.get("received_monotonic"), p.get("timestamp_provenance"),
