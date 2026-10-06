@@ -27,7 +27,7 @@ class ReplayTests(unittest.TestCase):
         r = self.run_replay()
         self.assertEqual(r[0], "init:2/0/2")                 # backfill: 2 valid, 2 quarantined
         self.assertEqual(r[1], "prediction_frozen")          # cutoff at newStateId=1
-        self.assertEqual(r[2], "fairness:1")                 # commitment stored...
+        self.assertEqual(r[2], "fairness:1")                 # commitment stored; crypto observations are not counted in return value
         self.assertEqual(r[4], "ignored")                    # cashout multipliers never results
         self.assertEqual(r[7], "inserted")                   # roundChartInfo for 5000003
         self.assertEqual(r[8], "duplicate")
@@ -41,7 +41,8 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(self.t.current_round_id, 5000004)
         # fairness.roundId (5000003) used, not the message's top-level roundId (5000004)
         v = self.s.get_verification(5000003)
-        self.assertTrue(v["verified"], v)
+        self.assertEqual(v["status"], "not_verifiable", v)
+        self.assertFalse(v["verified"], v)
         self.assertIsNone(self.s.get_verification(5000004))
         # backfill rounds are tagged
         self.assertEqual(self.s.get_round(5000001)["origin"], "backfill")
