@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from aviator.collector import Collector
+from aviator.collector import Collector, INJECT_JS
 from aviator.extract import extract_fairness
 from tools.extract_network_evidence import NetworkExtractor
 from aviator.netlog import RotatingJsonlLog
@@ -90,6 +90,15 @@ class EvidencePipelineTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertIsNone(records[0].round_hash)
         self.assertEqual(records[0].crypto_observations[0]["semantic_type"], "unknown")
+
+    def test_browser_snapshot_weakset_is_per_snapshot(self):
+        self.assertIn("const snap = (v, d = 0, seen = new WeakSet())", INJECT_JS)
+        self.assertNotIn("const seen = new WeakSet();", INJECT_JS)
+
+    def test_browser_queue_overflow_contains_sequence_gap_metadata(self):
+        self.assertIn("first_dropped_sequence", INJECT_JS)
+        self.assertIn("last_dropped_sequence", INJECT_JS)
+        self.assertIn("raw_browser_event_queue_not_recoverable", INJECT_JS)
 
     def test_rotation_is_observable(self):
         p = TempProject()
