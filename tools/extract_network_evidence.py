@@ -24,17 +24,24 @@ from aviator.netlog import safe_url
 from aviator.validation import parse_round_id, RoundValidationError
 
 
+PROVENANCE_KEYS = {
+    "session_id", "collector_run_id", "event_id", "frame_id", "frame_index",
+    "packet_index", "packet_offset", "packet_end", "source_file", "source_line",
+}
+
 def redact_sensitive(data: Any, depth: int = 0) -> Any:
-    """Redact sensitive data from a structure."""
+    """Redact sensitive data while preserving evidence provenance."""
     if depth > 10:
         return data
     
     if isinstance(data, dict):
         result = {}
         for k, v in data.items():
-            key_lower = str(k).lower()
-            # Redact sensitive keys
-            if any(x in key_lower for x in ['token', 'password', 'cookie', 'auth', 'secret', 'session']):
+            key = str(k)
+            key_lower = key.lower()
+            if key in PROVENANCE_KEYS:
+                result[k] = redact_sensitive(v, depth + 1)
+            elif any(x in key_lower for x in ['token', 'password', 'cookie', 'auth', 'secret', 'session']):
                 result[k] = "REDACTED"
             else:
                 result[k] = redact_sensitive(v, depth + 1)
