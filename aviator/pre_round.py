@@ -40,11 +40,13 @@ class PreRoundBuffer:
         self._events.clear()
         self.dropped_total = 0
 
-    def add(self, event: ObservableEvent) -> None:
+    def add(self, event: ObservableEvent) -> Optional[ObservableEvent]:
+        dropped = None
         if len(self._events) >= self.max_events:
-            self._events.popleft()
+            dropped = self._events.popleft()
             self.dropped_total += 1
         self._events.append(event)
+        return dropped
 
     def events_for_round(self, round_id: int, cutoff_timestamp: float) -> list[ObservableEvent]:
         lower = cutoff_timestamp - self.max_age_s
