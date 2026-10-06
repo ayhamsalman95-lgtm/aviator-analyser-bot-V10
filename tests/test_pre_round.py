@@ -36,6 +36,15 @@ class PreRoundBufferTests(unittest.TestCase):
         self.assertEqual(snap["command_sequence"], ["changeState"])
         self.assertEqual(snap["event_count"], 1)
 
+    def test_capacity_eviction_returns_dropped_event(self):
+        b = PreRoundBuffer(max_events=2, max_age_s=10)
+        b.add(ObservableEvent(1.0, "ws", "first", 1, None, 1, 0, 1, 1, 0, 1, None, {"x": 1}, "event-1"))
+        b.add(ObservableEvent(2.0, "ws", "second", 1, None, 2, 0, 1, 1, 0, 1, None, {"x": 2}, "event-2"))
+        dropped = b.add(ObservableEvent(3.0, "ws", "third", 1, None, 3, 0, 1, 1, 0, 1, None, {"x": 3}, "event-3"))
+        self.assertIsNotNone(dropped)
+        self.assertEqual(dropped.event_id, "event-1")
+        self.assertEqual(b.dropped_total, 1)
+
     def test_clear_removes_old_session_events(self):
         b = PreRoundBuffer()
         b.add(ObservableEvent(100.0, "ws", "old", 1, None, 1, 0, 1, 1, 0, 1, None, {}))
