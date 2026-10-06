@@ -57,6 +57,7 @@ class FrameResult:
 def binary_summary(data: bytes, preview: int = 24) -> dict:
     return {
         "length": len(data),
+        "byte_length": len(data),
         "sha1": hashlib.sha1(data).hexdigest(),
         "sha256": hashlib.sha256(data).hexdigest(),
         "preview_hex": data[:preview].hex(),
