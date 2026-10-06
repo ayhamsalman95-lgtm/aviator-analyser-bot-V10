@@ -1,3 +1,7 @@
+# Runtime dependencies (Python 3.10+). install.bat also writes requirements.lock.txt (pip freeze).
 python-telegram-bot>=22.0,<23
-numpy>=2.0,<3
 playwright>=1.55,<2
+# SmartFoxServer 2X decoder. PyPI name "sfs2x-py", import name "sfs2x".
+# Provides decode_s2c_packet(bytes)->(dict, consumed) and parse_s2c_command(dict)->(cmd, params).
+# Pulls in pycryptodome, aiohttp, zstandard.
+sfs2x-py==0.1.1

@@ -1,0 +1,14 @@
+aviator\collector.py:100:        self.netlog = RotatingJsonlLog(logs / "network" / "game_network.jsonl",
+scripts\migrate_legacy.py:28:                "game_network.jsonl", "config.json"]
+tests\test_network_extractor.py:11:    """Test network evidence extraction from game_network.jsonl."""
+tests\test_network_extractor.py:17:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:151:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:199:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:234:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:255:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:295:            source = tmpdir / "game_network.jsonl.gz"
+tests\test_network_extractor.py:326:            source = tmpdir / "game_network.jsonl"
+tests\test_network_extractor.py:346:            source = tmpdir / "game_network.jsonl"
+tools\extract_network_evidence.py:4:Process external game_network.jsonl files to extract fairness evidence,
+tools\extract_network_evidence.py:9:    python tools/extract_network_evidence.py <game_network.jsonl> [--output DERIVED.jsonl]
+tools\extract_network_evidence.py:483:    parser.add_argument("source", help="Path to game_network.jsonl (or .jsonl.gz)")

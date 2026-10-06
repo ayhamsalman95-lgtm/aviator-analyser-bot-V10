@@ -1,0 +1,12 @@
+{"cmd": "init", "params": {"roundsInfo": [{"roundId": 5000001, "maxMultiplier": 1.53}, {"roundId": 5000002, "maxMultiplier": 4.1}, {"roundId": "bad", "maxMultiplier": 2.0}, {"round": 5000003, "mult": 2.0}]}}
+{"cmd": "changeState", "params": {"roundId": 5000003, "newStateId": 1}}
+{"cmd": "serverSeedResponse", "params": {"serverSeedSHA256": "6185563d64c1d1bcfd91817cba5ecfccf33cfecad054ae4159e6e398c561ca86"}}
+{"cmd": "changeState", "params": {"roundId": 5000003, "newStateId": 2}}
+{"cmd": "updateCurrentCashOuts", "params": {"cashouts": [{"multiplier": 1.7, "roundId": 5000003}]}}
+{"cmd": "changeState", "params": {"roundId": 5000003, "newStateId": 3}}
+{"cmd": "changeState", "params": {"roundId": 5000004, "newStateId": 1}}
+{"cmd": "roundChartInfo", "params": {"roundId": 5000003, "maxMultiplier": 1.73}}
+{"cmd": "roundChartInfo", "params": {"roundId": 5000003, "maxMultiplier": 1.73}}
+{"cmd": "previousRoundInfoResponse", "params": {"roundId": 5000004, "fairness": {"roundId": 5000003, "serverSeed": "Kq3Zp9Vb2Lm8Xw4T", "playerSeeds": [{"seed": "b1f0c2d3e4a5968778695a4b3c2d1e0f", "username": "u"}, {"seed": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "username": "u"}, {"seed": "ffeeddccbbaa99887766554433221100", "username": "u"}], "combinedHash": "70f35c41852968709bcc43d08fc83485c641c08695e508111e12fc6ed0d580087612d12a0f9a970523462c32f1c806f3d5490a76dc657305a9121a40a172b167", "serverSeedSHA256": "6185563d64c1d1bcfd91817cba5ecfccf33cfecad054ae4159e6e398c561ca86"}}}
+{"cmd": "changeState", "params": {"roundId": 5000004, "newStateId": 2}}
+{"cmd": "roundChartInfo", "params": {"roundId": 5000004, "maxMultiplier": 1.0}}
