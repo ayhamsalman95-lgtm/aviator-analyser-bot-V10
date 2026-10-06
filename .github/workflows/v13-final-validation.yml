@@ -1,0 +1,67 @@
+name: V13 final validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v13-prir]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: v13-prir
+          fetch-depth: 0
+
+      - name: Report revision
+        run: |
+          echo "BRANCH=$(git branch --show-current)"
+          echo "HEAD=$(git rev-parse HEAD)"
+          python3 --version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e .; fi
+
+      - name: Compile
+        run: python -m compileall -q aviator tools tests
+
+      - name: Targeted evidence tests
+        run: |
+          python -m unittest -v             tests.test_evidence_pipeline             tests.test_fairness             tests.test_sfs
+
+      - name: Full test suite
+        run: python -m unittest discover -v
+
+      - name: Static remediation audit
+        if: always()
+        run: |
+          echo "=== silent exception patterns ==="
+          grep -RInE 'except[[:space:]]+(Exception[[:space:]]*)?:[[:space:]]*$|except[[:space:]]*:[[:space:]]*$' aviator tools tests || true
+          echo "=== evidence-path INSERT OR IGNORE ==="
+          grep -RIn 'INSERT OR IGNORE' aviator tools tests || true
+          echo "=== extraction event timestamp time.time() ==="
+          grep -RIn 'time\.time()' aviator/extract.py tools/extract_network_evidence.py || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v13-final-validation-logs
+          path: |
+            **/test*.log
+            **/junit*.xml
+          if-no-files-found: ignore
