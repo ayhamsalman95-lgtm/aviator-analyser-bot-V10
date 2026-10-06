@@ -118,6 +118,9 @@ class EvidencePipelineTests(unittest.TestCase):
             col._frame_index = 0
             col._last_frame_received_at = None
             col._last_snapshot_round = None
+            col.pre_round = __import__("aviator.pre_round", fromlist=["PreRoundBuffer"]).PreRoundBuffer(
+                max_events=int(p.cfg["pre_round_max_events"]), max_age_s=float(p.cfg["pre_round_window_s"])
+            )
             col._event_index = 0
             col.session_id = "integration-session"
             col.collector_run_id = "integration-run"
