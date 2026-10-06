@@ -8,6 +8,7 @@ from tests.helpers import FIXTURES, TempProject
 from scripts import migrate_legacy
 from scripts import repair as repair_mod
 from aviator.jsonl import read_jsonl
+from aviator.db import Store
 
 
 class MigrationTests(unittest.TestCase):
