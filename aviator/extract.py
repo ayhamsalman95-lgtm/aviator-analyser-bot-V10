@@ -113,7 +113,7 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
                 algorithm = None
                 if nk in {"seedsha256", "serverseedsha256", "nextserverseedsha256"}:
                     algorithm = "SHA-256"
-                elif nk in {"hashsha512", "sha512hash"}:
+                elif nk in {"hashsha512", "sha512hash", "roundhashsha512"}:
                     algorithm = "SHA-512"
                 rec.crypto_observations.append({
                     "field_name": str(k),
