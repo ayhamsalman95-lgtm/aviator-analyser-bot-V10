@@ -28,3 +28,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 requirements.lock.txt
+
+# Local forensic artifacts - keep on disk, do not upload
+V13-prir-69e4523.zip
+aviator/collector.py.spribe-test.bak
+aviator_provably_fair.har
