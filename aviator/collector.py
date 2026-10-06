@@ -32,6 +32,7 @@ INJECT_JS = r"""
   window.__aviatorBuf = [];
   window.__aviatorHookErrors = [];
   const QUEUE_LIMIT = 2000;
+  let browserSequence = 0;
   const recordHookError = (stage, e) => {
     try {
       if (window.__aviatorHookErrors.length < 100) {
@@ -45,15 +46,25 @@ INJECT_JS = r"""
   };
   const push = (item) => {
     try {
+      const event_sequence = ++browserSequence;
       if (window.__aviatorBuf.length >= QUEUE_LIMIT) {
         const dropped = Math.min(1000, window.__aviatorBuf.length);
+        const first_dropped_sequence = window.__aviatorBuf[0] && window.__aviatorBuf[0].event_sequence;
+        const last_dropped_sequence = window.__aviatorBuf[dropped - 1] && window.__aviatorBuf[dropped - 1].event_sequence;
         window.__aviatorBuf.splice(0, dropped);
         window.__aviatorBuf.push({
           t: Date.now(),
           event_type: "browserQueueOverflow",
-          data: {dropped_count: dropped, queue_limit: QUEUE_LIMIT}
+          data: {
+            dropped_count: dropped,
+            queue_limit: QUEUE_LIMIT,
+            first_dropped_sequence,
+            last_dropped_sequence,
+            recoverability: "raw_browser_event_queue_not_recoverable"
+          }
         });
       }
+      if (item && typeof item === "object") item.event_sequence = event_sequence;
       window.__aviatorBuf.push(item);
     } catch (e) {
       recordHookError("queue_push", e);
@@ -435,6 +446,9 @@ class Collector:
                     "event_id": self._next_event_id("browser-overflow"),
                     "dropped_count": data.get("dropped_count"),
                     "queue_limit": data.get("queue_limit", 2000),
+                    "first_dropped_sequence": data.get("first_dropped_sequence"),
+                    "last_dropped_sequence": data.get("last_dropped_sequence"),
+                    "recoverability": data.get("recoverability"),
                     "received_at": arrival_at,
                     "timestamp": browser_timestamp,
                     "timestamp_provenance": timestamp_provenance,
