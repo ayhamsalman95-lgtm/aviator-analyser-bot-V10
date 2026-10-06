@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS evidence_observations (
     packet_index INTEGER,
     packet_offset INTEGER,
     packet_end INTEGER,
+    raw_evidence_ref TEXT,
     observed_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_eo_round ON evidence_observations(round_id, association);
@@ -201,10 +202,12 @@ class Store:
                 "semantic_type TEXT, source TEXT NOT NULL, context_round_id INTEGER, received_at REAL, "
                 "received_monotonic REAL, timestamp_provenance TEXT, session_id TEXT, collector_run_id TEXT, "
                 "event_id TEXT, source_file TEXT, source_line INTEGER, frame_id TEXT, frame_index INTEGER, "
-                "packet_index INTEGER, packet_offset INTEGER, packet_end INTEGER, observed_at REAL NOT NULL)"
+                "packet_index INTEGER, packet_offset INTEGER, packet_end INTEGER, raw_evidence_ref TEXT, observed_at REAL NOT NULL)"
             )
             self.conn.execute("CREATE INDEX IF NOT EXISTS ix_eo_round ON evidence_observations(round_id, association)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS ix_eo_frame ON evidence_observations(frame_id, packet_index)")
+            if "raw_evidence_ref" not in self._table_columns("evidence_observations"):
+                self.conn.execute("ALTER TABLE evidence_observations ADD COLUMN raw_evidence_ref TEXT")
             fe_cols = self._table_columns("fairness_evidence")
             if "association" not in fe_cols:
                 self.conn.execute("ALTER TABLE fairness_evidence ADD COLUMN association TEXT NOT NULL DEFAULT 'legacy_unproven'")
@@ -425,14 +428,14 @@ class Store:
             "INSERT INTO evidence_observations("
             "round_id,association,evidence_kind,field_name,value,algorithm,semantic_type,source,"
             "context_round_id,received_at,received_monotonic,timestamp_provenance,session_id,collector_run_id,event_id,"
-            "source_file,source_line,frame_id,frame_index,packet_index,packet_offset,packet_end,observed_at)"
+            "source_file,source_line,frame_id,frame_index,packet_index,packet_offset,packet_end,raw_evidence_ref,observed_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 round_id, association, evidence_kind, field_name, value_text, algorithm, semantic_type, source,
                 context_round_id, p.get("received_at"), p.get("received_monotonic"), p.get("timestamp_provenance"),
                 p.get("session_id"), p.get("collector_run_id"), p.get("event_id"),
                 p.get("source_file"), p.get("source_line"), p.get("frame_id"), p.get("frame_index"),
-                p.get("packet_index"), p.get("packet_offset"), p.get("packet_end"), self.clock(),
+                p.get("packet_index"), p.get("packet_offset"), p.get("packet_end"), p.get("raw_evidence_ref"), self.clock(),
             ),
         )
         return int(cur.lastrowid)
