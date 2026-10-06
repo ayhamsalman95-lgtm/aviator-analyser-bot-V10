@@ -978,8 +978,16 @@ class Collector:
 
                 def on_ws(ws):
                     url = ws.url
-                    self.netlog.write({"kind": "ws_open", "session_id": self.session_id,
-                                       "collector_run_id": self.collector_run_id, "url": safe_url(url)})
+                    self.netlog.write({
+                        "kind": "ws_open",
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("ws-open"),
+                        "received_at": time.time(),
+                        "received_monotonic": time.monotonic(),
+                        "timestamp_provenance": "collector_received_at",
+                        "url": safe_url(url),
+                    })
 
                     def received(payload):
                         try:
@@ -988,15 +996,30 @@ class Collector:
                             else:
                                 self.on_text_frame(str(payload), url)
                         except Exception as exc:
-                            self.netlog.write({"kind": "frame_handler_error",
-                                               "session_id": self.session_id,
-                                               "collector_run_id": self.collector_run_id,
-                                               "error": f"{type(exc).__name__}: {exc}"})
+                            self.netlog.write({
+                                "kind": "frame_handler_error",
+                                "session_id": self.session_id,
+                                "collector_run_id": self.collector_run_id,
+                                "event_id": self._next_event_id("frame-handler-error"),
+                                "received_at": time.time(),
+                                "timestamp_provenance": "collector_received_at",
+                                "url": safe_url(url),
+                                "error": f"{type(exc).__name__}: {exc}",
+                            })
                     ws.on("framereceived", received)
-                    ws.on("close", lambda *_: self.netlog.write({"kind": "ws_close",
-                                                                    "session_id": self.session_id,
-                                                                    "collector_run_id": self.collector_run_id,
-                                                                    "url": safe_url(url)}))
+
+                    def closed(*_):
+                        self.netlog.write({
+                            "kind": "ws_close",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("ws-close"),
+                            "received_at": time.time(),
+                            "received_monotonic": time.monotonic(),
+                            "timestamp_provenance": "collector_received_at",
+                            "url": safe_url(url),
+                        })
+                    ws.on("close", closed)
 
                 def on_response(resp):
                     try:
