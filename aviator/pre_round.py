@@ -8,7 +8,6 @@ from typing import Any, Deque, Optional
 
 @dataclass(frozen=True)
 class ObservableEvent:
-    event_id: Optional[str]
     timestamp: float
     source: str
     command: Optional[str]
@@ -21,6 +20,7 @@ class ObservableEvent:
     packet_offset: Optional[int]
     packet_end: Optional[int]
     inter_arrival_ms: Optional[float]
+    event_id: Optional[str] = None
     payload: Any = None
 
 
@@ -98,5 +98,6 @@ class PreRoundBuffer:
             "packet_end": event.packet_end,
             "packet_size": event.packet_size,
             "inter_arrival_ms": event.inter_arrival_ms,
+            "event_id": event.event_id,
             "payload": event.payload,
         }
