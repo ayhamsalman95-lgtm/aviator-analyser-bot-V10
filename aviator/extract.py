@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .fairness import REQUIRED_PLAYER_SEEDS, round_hash, sha256_hex
 from .validation import RoundValidationError, parse_round_id
 
 
@@ -42,6 +43,46 @@ HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
 HEX128 = re.compile(r"^[0-9a-fA-F]{128}$")
 
 
+@dataclass(frozen=True)
+class FairnessProfile:
+    """Protocol-specific reading of fairness fields.
+
+    A profile never classifies a hash by its name alone. ``commitment_keys`` and
+    ``round_hash_keys`` list fields that *may* carry a commitment / round hash; such a
+    field is promoted only when the digest relationship is proven inside the same
+    object (SHA-256(serverSeed) or SHA-512(serverSeed + first three seeds)). Every
+    other hash stays an unclassified observation.
+    """
+    name: str
+    game_id: Optional[int] = None
+    accepted_fields: frozenset = frozenset()
+    commitment_keys: frozenset = frozenset()
+    round_hash_keys: frozenset = frozenset()
+
+
+GENERIC_PROFILE = FairnessProfile(name="generic")
+
+# Spribe Aviator, game_id 52358. Field names are compared after ``norm``.
+SPRIBE_AVIATOR_PROFILE = FairnessProfile(
+    name="spribe_aviator",
+    game_id=52358,
+    accepted_fields=frozenset(norm(k) for k in (
+        "serverSeed", "revealedServerSeed", "playerSeeds", "clientSeeds",
+        "serverSeedSHA256", "roundHashSHA512")),
+    commitment_keys=frozenset({norm("serverSeedSHA256")}),
+    round_hash_keys=frozenset({norm("roundHashSHA512")}),
+)
+
+_PROFILES_BY_GAME = {SPRIBE_AVIATOR_PROFILE.game_id: SPRIBE_AVIATOR_PROFILE}
+
+
+def profile_for_game(game_id: Any) -> FairnessProfile:
+    try:
+        return _PROFILES_BY_GAME.get(int(game_id), GENERIC_PROFILE)
+    except (TypeError, ValueError):
+        return GENERIC_PROFILE
+
+
 @dataclass
 class FairnessRecord:
     path: str
@@ -55,6 +96,7 @@ class FairnessRecord:
     scan_truncated: bool = False
     scan_limit: Optional[int] = None
     list_truncations: int = 0
+    profile: str = "generic"
 
     def meaningful(self) -> bool:
         return bool(self.server_seed or self.player_seeds or self.commitment or
@@ -86,8 +128,32 @@ def _player_seeds(value: Any) -> list[str]:
     return out
 
 
-def _record_from_dict(d: dict, path: str) -> FairnessRecord:
-    rec = FairnessRecord(path=path)
+def _confirm_with_profile(rec: FairnessRecord, profile: FairnessProfile) -> None:
+    """Promote profile-listed hash observations whose digest relationship is proven.
+
+    Unproven hashes are left untouched as ``semantic_type == "unknown"`` observations.
+    """
+    if not (profile.commitment_keys or profile.round_hash_keys) or not rec.server_seed:
+        return
+    for obs in rec.crypto_observations:
+        key = norm(obs["field_name"])
+        value = obs["value"]
+        if key in profile.commitment_keys and obs.get("algorithm") == "SHA-256":
+            if value == sha256_hex(rec.server_seed):
+                obs["semantic_type"] = "commitment_sha256"
+                obs["confirmation"] = "digest_matches_server_seed"
+                rec.commitment = value
+        elif key in profile.round_hash_keys and obs.get("algorithm") == "SHA-512":
+            if len(rec.player_seeds) >= REQUIRED_PLAYER_SEEDS:
+                seeds = rec.player_seeds[:REQUIRED_PLAYER_SEEDS]
+                if value == round_hash(rec.server_seed, seeds):
+                    obs["semantic_type"] = "round_hash_sha512"
+                    obs["confirmation"] = "digest_matches_seeds"
+                    rec.round_hash = value
+
+
+def _record_from_dict(d: dict, path: str, profile: FairnessProfile = GENERIC_PROFILE) -> FairnessRecord:
+    rec = FairnessRecord(path=path, profile=profile.name)
     for k, v in d.items():
         nk = norm(k)
         if nk in ROUND_ID_KEYS:
@@ -122,10 +188,12 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
                     "value_length": len(text),
                     "semantic_type": "unknown",
                 })
+    _confirm_with_profile(rec, profile)
     return rec
 
 
-def extract_fairness(data: Any, max_nodes: int = 500) -> list[FairnessRecord]:
+def extract_fairness(data: Any, max_nodes: int = 500,
+                     profile: FairnessProfile = GENERIC_PROFILE) -> list[FairnessRecord]:
     """Return one record per object that directly contains named evidence fields."""
     out: list[FairnessRecord] = []
     stack: list[tuple[Any, str]] = [(data, "$")]
@@ -139,7 +207,7 @@ def extract_fairness(data: Any, max_nodes: int = 500) -> list[FairnessRecord]:
             if id(node) in seen:
                 continue
             seen.add(id(node))
-            rec = _record_from_dict(node, path)
+            rec = _record_from_dict(node, path, profile)
             if rec.meaningful():
                 out.append(rec)
             for k, v in node.items():

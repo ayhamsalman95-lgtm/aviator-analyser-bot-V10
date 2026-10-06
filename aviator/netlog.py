@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SECRET_QUERY_KEYS = re.compile(
@@ -50,8 +50,13 @@ def redact(value: Any) -> Any:
 
 
 class RotatingJsonlLog:
-    def __init__(self, path: Path, max_bytes: int = 20_000_000, backups: int = 5):
+    def __init__(self, path: Path, max_bytes: int = 20_000_000, backups: int = 5,
+                 record_filter: Optional[Callable[[dict], bool]] = None):
         self.path = Path(path)
+        # Decides which records are persisted (see aviator.modes.CollectionPolicy).
+        # None keeps every record. A filter that raises fails open.
+        self.record_filter = record_filter
+        self.records_filtered = 0
         self.max_bytes = int(max_bytes)
         self.backups = int(backups)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +117,14 @@ class RotatingJsonlLog:
 
     def write(self, record: dict) -> bool:
         self.records_observed += 1
+        if self.record_filter is not None:
+            try:
+                keep = bool(self.record_filter(record))
+            except Exception:
+                keep = True  # never lose evidence because of a filter bug
+            if not keep:
+                self.records_filtered += 1  # deliberate, mode-based skip: not a failure
+                return True
         try:
             rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **redact(record)}
             line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"

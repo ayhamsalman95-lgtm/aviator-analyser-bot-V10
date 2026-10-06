@@ -19,7 +19,8 @@ import time
 from collections import Counter
 from typing import Any, Optional
 
-from .extract import extract_fairness, norm
+from .extract import extract_fairness, norm, profile_for_game
+from .modes import DEFAULT_MODE, MINIMAL, resolve_mode
 from .predict import make_prediction
 from .validation import RoundValidationError, parse_round_id
 
@@ -48,6 +49,9 @@ class RoundTracker:
         self.cfg = cfg
         self.netlog = netlog
         self.clock = clock
+        # Protocol-specific fairness reading (Spribe Aviator for game_id 52358).
+        self.profile = profile_for_game(cfg.get("game_id"))
+        self.collection_mode = resolve_mode(cfg.get("collection_mode", DEFAULT_MODE))
         self.current_round_id: Optional[int] = None
         self.state_id: Optional[int] = None
         last = store.last_round()
@@ -191,12 +195,14 @@ class RoundTracker:
     def _fairness_from(self, params: Any, source: str,
                        evidence_context: Optional[dict[str, Any]] = None) -> int:
         stored = 0
-        for rec in extract_fairness(params):
+        for rec in extract_fairness(params, profile=self.profile):
             if rec.scan_truncated:
                 self._log("fairness_scan_truncated", source=source, path=rec.path,
                           max_nodes=rec.scan_limit, list_truncations=rec.list_truncations)
                 continue
             explicit = rec.round_id is not None and not rec.is_next_commitment
+            if self.collection_mode == MINIMAL and not explicit:
+                continue  # minimal: fairness data only when explicitly tied to a round
             assoc = "explicit" if explicit else "unassociated"
             rid = rec.round_id if explicit else None
             ctx = self.current_round_id

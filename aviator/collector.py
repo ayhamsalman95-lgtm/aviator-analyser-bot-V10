@@ -20,6 +20,8 @@ import uuid
 
 from .config import load_config
 from .db import Store
+from .extract import profile_for_game
+from .modes import FORENSIC, CollectionPolicy
 from .netlog import RotatingJsonlLog, safe_url
 from .pre_round import ObservableEvent, PreRoundBuffer
 from .sfs_codec import SfsDecoder, binary_summary, dependency_report, unwrap_browser_event
@@ -162,12 +164,18 @@ class SessionStale(RuntimeError):
 
 
 class Collector:
+    # Class-level default keeps instances built without __init__ on the original
+    # (forensic, nothing filtered) behaviour.
+    policy: CollectionPolicy = CollectionPolicy(FORENSIC)
+
     def __init__(self, cfg=None):
         self.cfg = cfg or load_config()
+        self.policy = CollectionPolicy(self.cfg.collection_mode, profile_for_game(self.cfg.get("game_id")))
         self.store = Store.from_config(self.cfg)
         logs = self.cfg.logs_dir
         self.netlog = RotatingJsonlLog(logs / "network" / "game_network.jsonl",
-                                       int(self.cfg["network_log_max_bytes"]), int(self.cfg["network_log_backups"]))
+                                       int(self.cfg["network_log_max_bytes"]), int(self.cfg["network_log_backups"]),
+                                       record_filter=self.policy.keep_record)
         self.tracker = RoundTracker(self.store, self.cfg, netlog=self.netlog)
         self.decoder = SfsDecoder()
         self.pre_round = PreRoundBuffer(max_events=int(self.cfg["pre_round_max_events"]), max_age_s=float(self.cfg["pre_round_window_s"]))
@@ -284,7 +292,7 @@ class Collector:
         frame_id = f"{self.session_id}:frame:{frame_index}"
         frame_event_id = self._next_event_id(f"frame{frame_index}")
         raw_b64 = base64.b64encode(bytes(data)).decode("ascii")
-        self.netlog.write({
+        frame_record = {
             "kind": "ws_binary_frame", "schema_version": 3,
             "session_id": self.session_id, "collector_run_id": self.collector_run_id,
             "event_id": frame_event_id, "frame_id": frame_id,
@@ -294,8 +302,14 @@ class Collector:
             "inter_arrival_ms": inter_arrival_ms,
             "encoding": "base64", "payload_b64": raw_b64, "payload_complete": True,
             "compression": "unknown", **summary,
-        })
+        }
+        if self.policy.forensic:
+            # Forensic: raw evidence is persisted before decoding, exactly as before.
+            self.netlog.write(frame_record)
         res = self.decoder.decode_frame(data)
+        if not self.policy.forensic and self.policy.keep_binary_frame(
+                res.commands if res.decoder_available else ()):
+            self.netlog.write(frame_record)
         if not res.decoder_available:
             self.netlog.write({"kind": "ws_binary_undecoded", "schema_version": 3,
                                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
@@ -378,7 +392,7 @@ class Collector:
             })
 
     def on_text_frame(self, text: str, ws_url: str) -> None:
-        if self.cfg["log_text_frames"]:
+        if self.policy.keep_text_frame(text, self.cfg["log_text_frames"]):
             limit = 20000
             retained = text[:limit]
             received_at = time.time()
@@ -413,7 +427,7 @@ class Collector:
                     browser_timestamp = None
             timestamp_provenance = "browser_date_now" if browser_timestamp is not None else "collector_received_at"
             browser_event_id = self._next_event_id("browser")
-            self.netlog.write({
+            browser_event_record = {
                 "kind": "browser_event",
                 "schema_version": 3,
                 "session_id": self.session_id,
@@ -423,7 +437,9 @@ class Collector:
                 "timestamp": browser_timestamp,
                 "timestamp_provenance": timestamp_provenance,
                 "raw_event": ev,
-            })
+            }
+            if self.policy.forensic:
+                self.netlog.write(browser_event_record)
             if isinstance(ev, dict) and ev.get("event_type") == "browserHookError":
                 data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
                 self.netlog.write({
@@ -455,6 +471,8 @@ class Collector:
                 })
                 continue
             unwrapped = unwrap_browser_event(ev)
+            if not self.policy.forensic and self.policy.keep_browser_event(unwrapped):
+                self.netlog.write(browser_event_record)
             if unwrapped is None:
                 self.netlog.write({
                     "kind": "browser_event_unhandled",

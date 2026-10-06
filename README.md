@@ -44,11 +44,42 @@ python -m unittest discover tests -v
 ### Configuration
 
 Edit `config.json` to customize:
+- Collection mode (`minimal`, `research`, `forensic`; see Collection Modes)
 - Game ID and URLs
 - Data directory locations
 - Batch size (default: 1000 rounds)
 - Prediction thresholds
 - Fairness autoclick behavior
+
+## Collection Modes
+
+Set `"collection_mode"` in `config.json` (`minimal`, `research` or `forensic`; default `research`). An invalid value stops startup instead of silently collecting the wrong amount of data.
+
+| Mode | Intended use | What is persisted |
+|------|--------------|-------------------|
+| `minimal` | Rounds only | Completed rounds (round_id, multiplier, timestamp, source). Fairness data only when explicitly tied to a round. No provenance tables, no raw frames. |
+| `research` (**recommended**) | Statistical analysis of rounds (e.g. 5000 Aviator rounds) | `roundChartInfo` results, `changeState` round boundaries, `init` backfill, `serverSeedResponse`, fairness-bearing frames, connection open/close markers, and provenance (round_id, source, frame reference). |
+| `forensic` | Investigations only | Everything, as before: raw binary frames, all decoded packets, text frames (per `log_text_frames`), pre-round snapshots. |
+
+**Research mode does not store** heartbeats, ping/pong, bet and cash-out feeds, other game events, UI events, or text frames that carry no fairness evidence. `log_text_frames` does not widen research mode. Errors, queue overflows, log rotation and undecodable frames are persisted in every mode so data loss stays visible.
+
+Research defaults in `config.json`: `network_log_max_bytes` 5000000, `network_log_backups` 3, `log_text_frames` false. Existing databases stay compatible: no tables are removed and the `evidence_observations` provenance table is simply left unpopulated in `minimal` mode.
+
+Use `research` day to day. Switch to `forensic` only while investigating a specific problem, because it writes far more data.
+
+### Fairness evidence (Spribe Aviator, game 52358)
+
+For game 52358 the collector reads `serverSeed`, `revealedServerSeed`, `playerSeeds`, `clientSeeds`, `serverSeedSHA256` and `roundHashSHA512`. Hash fields are never classified by name alone: `serverSeedSHA256` is recorded as a commitment only when it equals SHA-256 of the `serverSeed` in the same object, and `roundHashSHA512` as a round hash only when it equals SHA-512 of the server seed plus the first three player seeds. Every other hash stays an unclassified observation. The verification gate is unchanged, so no round is reported as verified on the strength of field names.
+
+Fairness verification needs evidence that the client can actually see. If the game never sends seeds to the browser, rounds are stored but cannot be verified.
+
+### Telegram
+
+Telegram output is one line per completed round: `ROUND <round_id> -> <multiplier>x source=<source>`. It never includes hashes, debug data, raw evidence or exception text. Prediction and fairness pushes are sent only in `forensic` mode.
+
+### What the collector is not
+
+The collector does **not** predict future rounds. It records completed rounds and the evidence around them so they can be analysed afterwards. Nothing here gives an edge over the game.
 
 ### Environment Variables
 

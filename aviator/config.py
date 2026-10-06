@@ -12,9 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .modes import DEFAULT_MODE, resolve_mode
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULTS: dict[str, Any] = {
+    "collection_mode": DEFAULT_MODE,   # minimal | research | forensic
     "game_id": 52358,
     "game_url": "https://1xlite-130003.top/ar/casino-search?game=52358",
     "site_home_url": "https://1xlite-130003.top/ar/",
@@ -82,6 +85,10 @@ class Config:
         return p if p.is_absolute() else self.root / p
 
     @property
+    def collection_mode(self) -> str:
+        return resolve_mode(self.values.get("collection_mode"))
+
+    @property
     def data_dir(self) -> Path:
         return self.path("data_dir")
 
@@ -129,4 +136,6 @@ def load_config(path: str | Path | None = None, root: Path | None = None,
         values.update(raw)
     if overrides:
         values.update(overrides)
+    # Fail loudly on a bad mode instead of silently collecting the wrong amount of data.
+    values["collection_mode"] = resolve_mode(values.get("collection_mode"))
     return Config(values=values, root=root)
