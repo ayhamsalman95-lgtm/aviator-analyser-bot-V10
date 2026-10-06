@@ -329,7 +329,8 @@ class NetworkExtractor:
                             "source": "collector", "complete_evidence": data})
         elif kind in ("pre_round_snapshot", "tracker_error", "frame_handler_error",
                       "ws_open", "ws_close", "ws_text", "browser_event", "browser_queue_overflow",
-                      "browser_event_unhandled", "fairness_gate_skip",
+                      "browser_event_unhandled", "browser_hook_error", "browser_drain_error",
+                      "collector_error", "fairness_gate_skip",
                       "fairness_button_icon_inventory", "fairness_button_icon_inventory_error",
                       "fairness_menu_exact_click", "fairness_exact_target_probe"):
             records.append({"classification": kind, "kind": kind,
