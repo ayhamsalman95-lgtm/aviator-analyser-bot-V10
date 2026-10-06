@@ -104,6 +104,26 @@ class EvidencePipelineTests(unittest.TestCase):
             p.cleanup()
 
 
+    def test_rotation_does_not_invent_record_drop_count(self):
+        p = TempProject()
+        try:
+            log = RotatingJsonlLog(p.dir / "network.jsonl", max_bytes=80, backups=1)
+            log.write({"kind": "first", "payload": "x" * 40})
+            log.write({"kind": "second", "payload": "y" * 40})
+            log.write({"kind": "third", "payload": "z" * 40})
+            self.assertEqual(log.records_dropped, 0)
+            rotation_rows = []
+            for path in p.dir.glob("network.jsonl*"):
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    row = json.loads(line)
+                    if row.get("kind") == "network_log_rotation":
+                        rotation_rows.append(row)
+            self.assertTrue(rotation_rows)
+            self.assertIn("old_file_size", rotation_rows[0])
+            self.assertIn("evidence_loss", rotation_rows[0])
+        finally:
+            p.cleanup()
+
     def test_collector_to_jsonl_to_extractor_integration(self):
         p = TempProject()
         try:
