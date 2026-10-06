@@ -60,7 +60,7 @@ class VerifyTests(unittest.TestCase):
 
     def test_no_recorded_result(self):
         r = fairness.verify_round(1, None, [VEC["server_seed"]], [VEC["player_seeds"]], [], [])
-        self.assertEqual(r.status, "incomplete")
+        self.assertEqual(r.status, "not_verifiable")
 
 
 class ExtractTests(unittest.TestCase):
@@ -131,8 +131,8 @@ class StoreFairnessTests(unittest.TestCase):
         self.assertFalse(self.s.get_verification(55)["locked"])
 
     def test_wrong_early_value_can_be_corrected(self):
-        # Old merge_seed_state kept the first seed_hash forever. Now a wrong
-        # unverified value produces 'conflict' (not verified) instead of silently sticking.
+        # Ambiguous cryptographic observations remain non-verifiable rather than
+        # being promoted to a conflict or verification result.
         self.s.insert_round(56, VEC["cents"] / 100, "sfs:roundChartInfo")
         self.s.add_fairness_evidence("commitment_sha256", "b" * 64, "t", 56, "explicit")
         self.s.add_fairness_evidence("commitment_sha256", VEC["commitment_sha256"], "t", 56, "explicit")
