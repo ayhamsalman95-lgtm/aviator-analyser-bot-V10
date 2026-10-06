@@ -1021,28 +1021,42 @@ class Collector:
                         })
                     ws.on("close", closed)
 
-                def on_response(resp):
-                    try:
-                        self.netlog.write({
-                            "kind": "http_response",
-                            "session_id": self.session_id,
-                            "collector_run_id": self.collector_run_id,
-                            "event_id": self._next_event_id("http-response"),
-                            "received_at": time.time(),
-                            "received_monotonic": time.monotonic(),
-                            "timestamp_provenance": "collector_received_at",
-                            "url": safe_url(resp.url),
-                            "status": resp.status,
-                        })
-                    except Exception as exc:
+                async def on_response(resp):
+                    received_at = time.time()
+                    record = {
+                        "kind": "http_response",
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("http-response"),
+                        "received_at": received_at,
+                        "received_monotonic": time.monotonic(),
+                        "timestamp_provenance": "collector_received_at",
+                        "url": safe_url(resp.url),
+                        "status": resp.status,
+                    }
+                    if self.cfg["log_http_bodies"]:
+                        try:
+                            body = await resp.body()
+                            try:
+                                record["body"] = body.decode("utf-8")
+                                record["body_encoding"] = "utf-8"
+                            except UnicodeDecodeError:
+                                record["body"] = base64.b64encode(body).decode("ascii")
+                                record["body_encoding"] = "base64"
+                        except Exception as exc:
+                            record["body_error"] = {
+                                "type": type(exc).__name__,
+                                "message": str(exc),
+                            }
+                    if not self.netlog.write(record):
                         self.netlog.write({
                             "kind": "collector_error",
                             "session_id": self.session_id,
                             "collector_run_id": self.collector_run_id,
-                            "event_id": self._next_event_id("response-error"),
+                            "event_id": self._next_event_id("response-write-error"),
                             "received_at": time.time(),
                             "timestamp_provenance": "collector_received_at",
-                            "error": f"HTTP response logging failed: {type(exc).__name__}: {exc}",
+                            "error": "HTTP response evidence persistence failed",
                         })
 
                 def attach(page):
