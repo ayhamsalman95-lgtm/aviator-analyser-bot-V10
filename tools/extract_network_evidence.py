@@ -56,10 +56,12 @@ class NetworkExtractor:
 
     def __init__(self, source_path: Path, output_path: Optional[Path] = None, chunk_size: int = 1000):
         self.source_path = Path(source_path)
-        self.output_path = output_path or self.source_path.parent / f"derived_evidence.jsonl"
+        import uuid
+        self.extraction_run_id = uuid.uuid4().hex
+        self.output_path = output_path or self.source_path.parent / f"derived_evidence.{self.extraction_run_id}.jsonl"
         self.chunk_size = chunk_size  # Write in chunks to manage memory
-        self.extraction_run_id = __import__("uuid").uuid4().hex
         self.source_file = str(self.source_path)
+        self._output_initialized = False
         self.stats = {
             "total_lines": 0,
             "parsed": 0,
@@ -384,7 +386,6 @@ class NetworkExtractor:
             # Only classify as http_fairness if actual fairness evidence was found
             if has_fairness_evidence:
                 classification = "http_fairness"
-                self.stats["classification_http_fairness"] += 1
             
             # PRESERVE COMPLETE HTTP response record (don't just extract fairness)
             record = {
@@ -412,8 +413,12 @@ class NetworkExtractor:
         """Process source file and stream evidence output."""
         print(f"Streaming {self.source_path.name}...", file=sys.stderr)
         
-        # Ensure output directory exists
+        # Ensure output directory exists and isolate this extraction run from any
+        # previous contents at the same explicit output path.
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.output_path, "w", encoding="utf-8"):
+            pass
+        self._output_initialized = True
         
         # Write in bounded chunks
         chunk = []
@@ -422,18 +427,14 @@ class NetworkExtractor:
             
             try:
                 received_at = line_data.get("received_at")
-                timestamp_provenance = "collector_received_at"
-                if received_at is None and line_data.get("timestamp") is not None:
-                    received_at = line_data.get("timestamp")
-                    timestamp_provenance = "legacy_timestamp"
+                timestamp_provenance = "collector_received_at" if received_at is not None else "absent"
+                legacy_timestamp = line_data.get("timestamp")
                 if isinstance(received_at, str):
                     try:
                         received_at = float(received_at)
                     except (ValueError, TypeError):
                         received_at = None
                         timestamp_provenance = "absent"
-                if received_at is None:
-                    timestamp_provenance = "absent"
                 self.stats["parsed"] += 1
                 
                 # Extract evidence
@@ -448,6 +449,8 @@ class NetworkExtractor:
                     rec["source_kind"] = line_data.get("kind")
                     rec["event_timestamp"] = received_at
                     rec["timestamp_provenance"] = timestamp_provenance
+                    if "timestamp" in line_data:
+                        rec["timestamp"] = legacy_timestamp
                     rec["extracted_at"] = time.time()
                     rec["source_record"] = line_data
                     rec_clean = redact_sensitive(rec)
@@ -492,8 +495,8 @@ class NetworkExtractor:
         return self.stats
 
     def _write_chunk(self, records: list[dict]) -> None:
-        """Write a chunk of records to output file."""
-        mode = "a" if self.output_path.exists() else "w"
+        """Write records for this extraction run only."""
+        mode = "a" if self._output_initialized else "w"
         with open(self.output_path, mode, encoding="utf-8") as f:
             for rec in records:
                 f.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n")
