@@ -61,7 +61,7 @@ def format_event(kind: str, payload: dict, store=None) -> Optional[str]:
     if kind == "round_completed":
         return format_result(payload, store)
     if kind == "fairness_update":
-        if payload.get("status") == "incomplete":
+        if payload.get("status") in {"incomplete", "not_verifiable"}:
             return None  # don't spam partial evidence
         return format_fairness(payload)
     return None
