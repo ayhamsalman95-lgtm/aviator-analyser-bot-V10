@@ -74,6 +74,7 @@ class EvidencePipelineTests(unittest.TestCase):
             row = json.loads((p.dir / "net.jsonl").read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(base64.b64decode(row["payload_b64"]), payload)
             self.assertEqual(row["sha256"], hashlib.sha256(payload).hexdigest())
+            self.assertEqual(row["byte_length"], len(payload))
             self.assertTrue(row["payload_complete"])
         finally:
             p.cleanup()
@@ -125,6 +126,54 @@ class EvidencePipelineTests(unittest.TestCase):
             self.assertTrue(all(row["source_file"] == str(p.dir / "game_network.jsonl") for row in rows))
             self.assertTrue(all(row["extraction_run_id"] for row in rows))
             self.assertTrue(any(row["source_kind"] == "ws_binary_frame" for row in rows))
+        finally:
+            p.cleanup()
+
+    def test_extraction_run_isolated_and_timestamp_provenance(self):
+        p = TempProject()
+        try:
+            source = p.dir / "game_network.jsonl"
+            output = p.dir / "derived.jsonl"
+            source.write_text(
+                json.dumps({"kind": "ws_text", "received_at": 123.5, "timestamp": 99.0, "payload": "x"}) + "\n",
+                encoding="utf-8",
+            )
+            first = NetworkExtractor(source, output)
+            first_stats = first.extract()
+            first_rows = [json.loads(x) for x in output.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(first_stats["output_complete"])
+            self.assertEqual(len(first_rows), 1)
+            self.assertEqual(first_rows[0]["event_timestamp"], 123.5)
+            self.assertEqual(first_rows[0]["timestamp_provenance"], "collector_received_at")
+            self.assertEqual(first_rows[0]["timestamp"], 99.0)
+            first_id = first_rows[0]["extraction_run_id"]
+
+            second = NetworkExtractor(source, output)
+            second.extract()
+            second_rows = [json.loads(x) for x in output.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(second_rows), 1)
+            self.assertNotEqual(second_rows[0]["extraction_run_id"], first_id)
+        finally:
+            p.cleanup()
+
+    def test_http_fairness_classification_counted_once(self):
+        p = TempProject()
+        try:
+            source = p.dir / "http.jsonl"
+            output = p.dir / "derived.jsonl"
+            source.write_text(json.dumps({
+                "kind": "http_response",
+                "received_at": 10.0,
+                "body": json.dumps({"seedSHA256": "a" * 64}),
+                "url": "https://example.invalid/fairness",
+                "status": 200,
+            }) + "\n", encoding="utf-8")
+            extractor = NetworkExtractor(source, output)
+            stats = extractor.extract()
+            rows = [json.loads(x) for x in output.read_text(encoding="utf-8").splitlines()]
+            http_rows = [r for r in rows if r.get("classification") == "http_fairness"]
+            self.assertEqual(len(http_rows), 1)
+            self.assertEqual(stats["classification_http_fairness"], 1)
         finally:
             p.cleanup()
 
