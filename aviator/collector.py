@@ -302,7 +302,20 @@ class Collector:
                     ),
                 )
             except Exception as exc:
-                self.netlog.write({"kind": "tracker_error", "command": cmd, "error": f"{type(exc).__name__}: {exc}"})
+                self.netlog.write({
+                    "kind": "tracker_error",
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": f"{frame_id}:packet:{packet_index}:tracker-error",
+                    "frame_id": frame_id,
+                    "frame_index": frame_index,
+                    "packet_index": packet_index,
+                    "received_at": received_at,
+                    "received_monotonic": received_monotonic,
+                    "timestamp_provenance": "collector_received_at",
+                    "command": cmd,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
         if res.error or res.leftover or res.packet_limit_reached:
             self.netlog.write({
                 "kind": "sfs_decode_error", "schema_version": 3,
@@ -326,13 +339,25 @@ class Collector:
         if self.cfg["log_text_frames"]:
             limit = 20000
             retained = text[:limit]
-            self.netlog.write({"kind": "ws_text", "url": safe_url(ws_url), "length": len(text),
-                               "payload": retained,
-                               "payload_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                               "payload_complete": len(text) <= limit,
-                               "truncated": len(text) > limit,
-                               "truncation_limit": limit if len(text) > limit else None,
-                               "retained_length": len(retained)})
+            received_at = time.time()
+            self.netlog.write({
+                "kind": "ws_text",
+                "schema_version": 3,
+                "session_id": self.session_id,
+                "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id("text-frame"),
+                "url": safe_url(ws_url),
+                "received_at": received_at,
+                "received_monotonic": time.monotonic(),
+                "timestamp_provenance": "collector_received_at",
+                "length": len(text),
+                "payload": retained,
+                "payload_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "payload_complete": len(text) <= limit,
+                "truncated": len(text) > limit,
+                "truncation_limit": limit if len(text) > limit else None,
+                "retained_length": len(retained),
+            })
 
     def on_browser_events(self, events: list) -> None:
         for ev in events or []:
@@ -945,10 +970,27 @@ class Collector:
 
                 def on_response(resp):
                     try:
-                        self.netlog.write({"kind": "http_response", "url": safe_url(resp.url),
-                                           "status": resp.status})
-                    except Exception:
-                        pass
+                        self.netlog.write({
+                            "kind": "http_response",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("http-response"),
+                            "received_at": time.time(),
+                            "received_monotonic": time.monotonic(),
+                            "timestamp_provenance": "collector_received_at",
+                            "url": safe_url(resp.url),
+                            "status": resp.status,
+                        })
+                    except Exception as exc:
+                        self.netlog.write({
+                            "kind": "collector_error",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("response-error"),
+                            "received_at": time.time(),
+                            "timestamp_provenance": "collector_received_at",
+                            "error": f"HTTP response logging failed: {type(exc).__name__}: {exc}",
+                        })
 
                 def attach(page):
                     page.on("websocket", on_ws)
@@ -977,7 +1019,17 @@ class Collector:
                         for frame in list(pg.frames):
                             try:
                                 events = await frame.evaluate(DRAIN_JS)
-                            except Exception:
+                            except Exception as exc:
+                                self.netlog.write({
+                                    "kind": "browser_drain_error",
+                                    "session_id": self.session_id,
+                                    "collector_run_id": self.collector_run_id,
+                                    "event_id": self._next_event_id("browser-drain-error"),
+                                    "received_at": time.time(),
+                                    "timestamp_provenance": "collector_received_at",
+                                    "frame_url": safe_url(frame.url),
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                })
                                 continue
                             self.on_browser_events(events)
                     if self.cfg["fairness_autoclick"]:
