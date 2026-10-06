@@ -30,7 +30,19 @@ INJECT_JS = r"""
   if (window.__aviatorHooked) return;
   window.__aviatorHooked = true;
   window.__aviatorBuf = [];
+  window.__aviatorHookErrors = [];
   const QUEUE_LIMIT = 2000;
+  const recordHookError = (stage, e) => {
+    try {
+      if (window.__aviatorHookErrors.length < 100) {
+        window.__aviatorHookErrors.push({
+          t: Date.now(),
+          event_type: "browserHookError",
+          data: {stage: String(stage), error: String(e && e.message || e)}
+        });
+      }
+    } catch (_) {}
+  };
   const push = (item) => {
     try {
       if (window.__aviatorBuf.length >= QUEUE_LIMIT) {
@@ -44,6 +56,7 @@ INJECT_JS = r"""
       }
       window.__aviatorBuf.push(item);
     } catch (e) {
+      recordHookError("queue_push", e);
       try { console.error("[AVIATOR-HOOK] queue push failed", e); } catch (_) {}
     }
   };
@@ -61,7 +74,8 @@ INJECT_JS = r"""
         const o = {};
         const keys = v.getKeysArray() || [];
         for (const k of keys.slice(0, 200)) {
-          try { o[String(k)] = snap(v.get(k), d + 1, seen); } catch (e) {}
+          try { o[String(k)] = snap(v.get(k), d + 1, seen); }
+          catch (e) { recordHookError("snapshot_object_key", e); }
         }
         if (keys.length > 200) {
           o.__aviator_truncated__ = {reason: "object_key_limit", original_count: keys.length, retained_count: 200};
@@ -72,7 +86,8 @@ INJECT_JS = r"""
         const a = [];
         const size = Number(v.size()) || 0;
         for (let i = 0; i < Math.min(size, 500); i++) {
-          try { a.push(snap(v.get(i), d + 1, seen)); } catch (e) {}
+          try { a.push(snap(v.get(i), d + 1, seen)); }
+          catch (e) { recordHookError("snapshot_array_item", e); }
         }
         if (size > 500) {
           a.push({__aviator_truncated__: true, reason: "array_limit", original_count: size, retained_count: 500});
@@ -91,13 +106,15 @@ INJECT_JS = r"""
       const keys = Object.keys(v);
       for (const k of keys.slice(0, 200)) {
         if (/^(password|passwd|token|authorization|cookie|secret|session)$/i.test(k)) continue;
-        try { o[k] = snap(v[k], d + 1, seen); } catch (e) {}
+        try { o[k] = snap(v[k], d + 1, seen); }
+        catch (e) { recordHookError("snapshot_object_property", e); }
       }
       if (keys.length > 200) {
         o.__aviator_truncated__ = {reason: "object_key_limit", original_count: keys.length, retained_count: 200};
       }
       return o;
     } catch (e) {
+      recordHookError("snapshot", e);
       return {__aviator_truncated__: true, reason: "snapshot_error"};
     } finally {
       try { seen.delete(v); } catch (e) {}
@@ -113,12 +130,12 @@ INJECT_JS = r"""
         try {
           const type = String(evt && evt.type || "");
           if (type === "extensionResponse") push({ t: Date.now(), event_type: type, data: snap(evt) });
-        } catch (e) {}
+        } catch (e) { recordHookError("dispatch_event", e); }
         return orig.apply(this, arguments);
       };
       C.prototype.__aviatorHooked = true;
       return true;
-    } catch (e) { return false; }
+    } catch (e) { recordHookError("hook_install", e); return false; }
   };
   hook();
   let tries = 0;
@@ -126,7 +143,7 @@ INJECT_JS = r"""
 })();
 """
 
-DRAIN_JS = "() => (window.__aviatorBuf ? window.__aviatorBuf.splice(0, window.__aviatorBuf.length) : [])"
+DRAIN_JS = "() => { const events = window.__aviatorBuf ? window.__aviatorBuf.splice(0, window.__aviatorBuf.length) : []; const errors = window.__aviatorHookErrors ? window.__aviatorHookErrors.splice(0, window.__aviatorHookErrors.length) : []; return events.concat(errors); }"
 
 
 class SessionStale(RuntimeError):
