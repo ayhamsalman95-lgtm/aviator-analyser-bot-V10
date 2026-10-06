@@ -399,6 +399,19 @@ class Collector:
                 "timestamp_provenance": timestamp_provenance,
                 "raw_event": ev,
             })
+            if isinstance(ev, dict) and ev.get("event_type") == "browserHookError":
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                self.netlog.write({
+                    "kind": "browser_hook_error",
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": self._next_event_id("browser-hook-error"),
+                    "stage": data.get("stage"),
+                    "error": data.get("error"),
+                    "received_at": arrival_at,
+                    "timestamp_provenance": "collector_received_at",
+                })
+                continue
             if isinstance(ev, dict) and ev.get("event_type") == "browserQueueOverflow":
                 data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
                 self.netlog.write({
