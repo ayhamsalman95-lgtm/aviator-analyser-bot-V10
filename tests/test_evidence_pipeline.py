@@ -177,6 +177,44 @@ class EvidencePipelineTests(unittest.TestCase):
         finally:
             p.cleanup()
 
+    def test_evidence_observation_preserves_provenance_and_duplicates(self):
+        p = TempProject()
+        try:
+            provenance = {
+                "received_at": 12.5,
+                "received_monotonic": 4.25,
+                "timestamp_provenance": "collector_received_at",
+                "session_id": "s",
+                "collector_run_id": "r",
+                "event_id": "e",
+                "source_file": "game_network.jsonl",
+                "source_line": 7,
+                "frame_id": "f",
+                "frame_index": 3,
+                "packet_index": 2,
+                "packet_offset": 10,
+                "packet_end": 20,
+            }
+            first = p.store.add_crypto_observation(
+                round_id=123, association="explicit", field_name="seedSHA256",
+                value="a" * 64, algorithm="SHA-256", semantic_type="unknown",
+                source="sfs", provenance=provenance,
+            )
+            second = p.store.add_crypto_observation(
+                round_id=123, association="explicit", field_name="seedSHA256",
+                value="a" * 64, algorithm="SHA-256", semantic_type="unknown",
+                source="browser", provenance={**provenance, "event_id": "e2"},
+            )
+            self.assertNotEqual(first, second)
+            rows = p.store.conn.execute(
+                "SELECT source,event_id,frame_id,packet_index,timestamp_provenance FROM evidence_observations ORDER BY id"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["event_id"], "e")
+            self.assertEqual(rows[1]["event_id"], "e2")
+        finally:
+            p.cleanup()
+
     def test_db_has_evidence_observations(self):
         p = TempProject()
         try:
