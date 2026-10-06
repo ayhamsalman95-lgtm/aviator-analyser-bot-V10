@@ -8,6 +8,7 @@ from typing import Any, Deque, Optional
 
 @dataclass(frozen=True)
 class ObservableEvent:
+    event_id: Optional[str]
     timestamp: float
     source: str
     command: Optional[str]
