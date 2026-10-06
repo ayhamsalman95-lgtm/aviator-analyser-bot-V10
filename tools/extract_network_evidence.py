@@ -30,9 +30,7 @@ PROVENANCE_KEYS = {
 }
 
 def redact_sensitive(data: Any, depth: int = 0) -> Any:
-    """Redact sensitive data while preserving evidence provenance."""
-    if depth > 10:
-        return data
+    """Redact sensitive data without silently truncating evidence structures."""
     
     if isinstance(data, dict):
         result = {}
@@ -47,7 +45,7 @@ def redact_sensitive(data: Any, depth: int = 0) -> Any:
                 result[k] = redact_sensitive(v, depth + 1)
         return result
     elif isinstance(data, list):
-        return [redact_sensitive(item, depth + 1) for item in data[:100]]
+        return [redact_sensitive(item, depth + 1) for item in data]
     elif isinstance(data, str):
         # Redact URLs with tokens/credentials
         if data.startswith('http'):
