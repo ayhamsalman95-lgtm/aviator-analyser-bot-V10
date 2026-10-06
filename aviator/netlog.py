@@ -45,6 +45,10 @@ class RotatingJsonlLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.write_failures = 0
         self.rotation_events = 0
+        self.records_observed = 0
+        self.records_persisted = 0
+        self.records_failed = 0
+        self.records_dropped = 0
         self.last_error: str | None = None
 
     def _rotate(self) -> dict:
@@ -63,6 +67,8 @@ class RotatingJsonlLog:
         else:
             self.path.unlink()
         self.rotation_events += 1
+        if dropped_backup is not None:
+            self.records_dropped += 1
         return {
             "old_file": str(self.path),
             "archived_file": str(self.path.with_name(f"{self.path.name}.1")) if self.backups > 0 else None,
@@ -83,11 +89,13 @@ class RotatingJsonlLog:
             return True
         except Exception as exc:
             self.write_failures += 1
+            self.records_failed += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
             print(f"[EVIDENCE-WRITE-FAILURE] {self.path}: {self.last_error}", file=sys.stderr, flush=True)
             return False
 
     def write(self, record: dict) -> bool:
+        self.records_observed += 1
         try:
             rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **redact(record)}
             line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
@@ -102,8 +110,14 @@ class RotatingJsonlLog:
                     {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **event},
                     ensure_ascii=False, default=str) + "\n"
                 if not self._write_line(rotation_line):
+                    self.records_failed += 1
                     return False
-            return self._write_line(line)
+            ok = self._write_line(line)
+            if ok:
+                self.records_persisted += 1
+            else:
+                self.records_failed += 1
+            return ok
         except Exception as exc:
             self.write_failures += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
