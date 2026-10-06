@@ -67,10 +67,10 @@ class TelegramTests(unittest.TestCase):
         self.s.add_fairness_evidence("player_seeds", ["aaaa1111", "bbbb2222", "cccc3333"], "t", 200, "explicit")
         self.s.add_fairness_evidence("server_seed", "Different1234567", "t2", 200, "explicit")  # same value
         kinds = [r["event_key"] for r in self.s.conn.execute("SELECT event_key FROM outbox")]
-        self.assertEqual(kinds, ["fairness:200:incomplete", "fairness:200:mismatch"])
+        self.assertEqual(kinds, ["fairness:200:not_verifiable"])
         sender = FakeSender()
         self.run_async(Notifier(self.s, sender, self.p.cfg, clock=self.p.clock).deliver_pending())
-        self.assertEqual(len(sender.sent), 1)   # 'incomplete' is silent, 'mismatch' delivered once
+        self.assertEqual(len(sender.sent), 0)   # ambiguous cryptographic evidence is silent
 
     def test_stale_prediction_not_sent(self):
         self.s.subscribe(1)
