@@ -18,10 +18,23 @@ def norm(key: Any) -> str:
 
 ROUND_ID_KEYS = {"roundid"}
 SERVER_SEED_KEYS = {"serverseed", "revealedserverseed"}
-COMMITMENT_KEYS = {"serverseedsha256", "serverseedhash", "hashedserverseed", "nextserverseedsha256"}
+# Hash-like fields are observations until their protocol semantics are explicitly
+# established. They must not be promoted to verifier inputs merely from naming.
+COMMITMENT_KEYS: set[str] = set()
 PLAYER_SEEDS_KEYS = {"playerseeds", "clientseeds", "playersseeds"}
-ROUND_HASH_KEYS = {"combinedhash", "combinedseedhash", "hashsha512", "sha512hash", "roundhashsha512"}
-OBSERVED_CRYPTO_KEYS = {"seedsha256"}
+ROUND_HASH_KEYS: set[str] = set()
+OBSERVED_CRYPTO_KEYS = {
+    "seedsha256",
+    "serverseedsha256",
+    "serverseedhash",
+    "hashedserverseed",
+    "nextserverseedsha256",
+    "combinedhash",
+    "combinedseedhash",
+    "hashsha512",
+    "sha512hash",
+    "roundhashsha512",
+}
 SEED_ITEM_KEYS = ("seed", "clientSeed", "playerSeed", "value")
 
 SEED_RE = re.compile(r"^[A-Za-z0-9_\-]{4,128}$")
@@ -96,11 +109,17 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
                 rec.round_hash = text.lower()
         elif nk in OBSERVED_CRYPTO_KEYS:
             if isinstance(v, str) and (HEX64.match(v.strip()) or HEX128.match(v.strip())):
+                text = v.strip().lower()
+                algorithm = None
+                if nk in {"seedsha256", "serverseedsha256", "nextserverseedsha256"}:
+                    algorithm = "SHA-256"
+                elif nk in {"hashsha512", "sha512hash"}:
+                    algorithm = "SHA-512"
                 rec.crypto_observations.append({
                     "field_name": str(k),
-                    "value": v.strip().lower(),
-                    "algorithm": "SHA-256",
-                    "value_length": len(v.strip()),
+                    "value": text,
+                    "algorithm": algorithm,
+                    "value_length": len(text),
                     "semantic_type": "unknown",
                 })
     return rec
