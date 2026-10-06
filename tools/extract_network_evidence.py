@@ -246,6 +246,17 @@ class NetworkExtractor:
                     record["complete_roundsInfo"] = roundsinfo  # PRESERVE COMPLETE STRUCTURE
                 records.append(record)
                 
+            elif cmd == "init" or cmd.endswith(":init"):
+                classification = "init"
+                records.append({
+                    "classification": classification,
+                    "kind": "sfs:init",
+                    "timestamp": received_at,
+                    "cmd": cmd,
+                    "source": "sfs_decoded",
+                    "complete_params": params,
+                    "url": safe_url(url) if url else None,
+                })
             elif "fairness" in cmd:
                 classification = "fairness_evidence"
                 round_id = None
@@ -412,9 +423,13 @@ class NetworkExtractor:
                 record["headers"] = redact_sensitive(headers)
             records.append(record)
         
+        for record in records:
+            record.setdefault("command", raw_cmd if kind == "sfs_decoded" else data.get("command"))
+            record.setdefault("source_kind", source_kind)
         if not records:
             records.append({"classification": "unhandled_kind", "kind": "unhandled_kind",
                             "source": "collector", "source_kind": source_kind,
+                            "command": data.get("command"),
                             "complete_evidence": data})
         return records
 
