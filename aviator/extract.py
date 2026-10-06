@@ -125,7 +125,7 @@ def _record_from_dict(d: dict, path: str) -> FairnessRecord:
     return rec
 
 
-def extract_fairness(data: Any, max_nodes: int = 2000) -> list[FairnessRecord]:
+def extract_fairness(data: Any, max_nodes: int = 500) -> list[FairnessRecord]:
     """Return one record per object that directly contains named evidence fields."""
     out: list[FairnessRecord] = []
     stack: list[tuple[Any, str]] = [(data, "$")]
