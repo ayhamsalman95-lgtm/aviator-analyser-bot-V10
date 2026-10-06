@@ -33,10 +33,17 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(r[8], "duplicate")
         self.assertEqual(self.s.round_count(), 4)
         # ...but the round-less commitment is NOT attached to any round
-        row = self.s.conn.execute("SELECT round_id, association, context_round_id FROM fairness_evidence "
-                                  "WHERE source LIKE '%serverSeedResponse%'").fetchone()
+        # serverSeedSHA256 is preserved as a neutral cryptographic observation,
+        # not inserted into canonical fairness_evidence without proven semantics.
+        row = self.s.conn.execute("SELECT round_id, association, field_name, semantic_type "
+                                  "FROM evidence_observations "
+                                  "WHERE source LIKE '%serverSeedResponse%' "
+                                  "AND evidence_kind='cryptographic_observation'").fetchone()
+        self.assertIsNotNone(row)
         self.assertIsNone(row["round_id"])
         self.assertEqual(row["association"], "unassociated")
+        self.assertEqual(row["field_name"], "serverSeedSHA256")
+        self.assertEqual(row["semantic_type"], "unknown")
         # previous-round result arriving after next round's changeState did not wipe state
         self.assertEqual(self.t.current_round_id, 5000004)
         # fairness.roundId (5000003) used, not the message's top-level roundId (5000004)
