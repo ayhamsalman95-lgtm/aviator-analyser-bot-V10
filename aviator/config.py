@@ -12,9 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .modes import DEFAULT_MODE, MODE_AWARE_KEYS, mode_log_defaults, resolve_mode
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULTS: dict[str, Any] = {
+    "collection_mode": DEFAULT_MODE,   # minimal | research | forensic
     "game_id": 52358,
     "game_url": "https://1xlite-130003.top/ar/casino-search?game=52358",
     "site_home_url": "https://1xlite-130003.top/ar/",
@@ -35,12 +38,13 @@ DEFAULTS: dict[str, Any] = {
     "watchdog_no_event_s": 180.0,
     "login_wait_s": 180.0,
     "reconnect_backoff_s": [5, 10, 20, 40, 80, 120],
-    "network_log_max_bytes": 20_000_000,
-    "network_log_backups": 5,
+    # None = "use the collection mode's default" (see modes.MODE_LOG_PROFILES).
+    "network_log_max_bytes": None,
+    "network_log_backups": None,
     "pre_round_window_s": 10.0,
     "pre_round_max_events": 512,
     "log_http_bodies": False,
-    "log_text_frames": True,
+    "log_text_frames": None,
     "admin_chat_ids": [],
     "telegram_poll_interval_s": 1.0,
     "telegram_max_attempts": 5,
@@ -80,6 +84,10 @@ class Config:
     def path(self, key: str) -> Path:
         p = Path(self.values[key])
         return p if p.is_absolute() else self.root / p
+
+    @property
+    def collection_mode(self) -> str:
+        return resolve_mode(self.values.get("collection_mode"))
 
     @property
     def data_dir(self) -> Path:
@@ -129,4 +137,11 @@ def load_config(path: str | Path | None = None, root: Path | None = None,
         values.update(raw)
     if overrides:
         values.update(overrides)
+    # Fail loudly on a bad mode instead of silently collecting the wrong amount of data.
+    mode = values["collection_mode"] = resolve_mode(values.get("collection_mode"))
+    # Mode-dependent logging settings: an explicit value wins, null/absent follows the mode.
+    defaults = mode_log_defaults(mode)
+    for key in MODE_AWARE_KEYS:
+        if values.get(key) is None:
+            values[key] = defaults[key]
     return Config(values=values, root=root)

@@ -20,6 +20,8 @@ import uuid
 
 from .config import load_config
 from .db import Store
+from .extract import profile_for_game
+from .modes import FORENSIC, HTTP_BODY_INSPECT, HTTP_BODY_OVERSIZED, HTTP_BODY_SKIP, HTTP_INSPECT_MAX_BYTES, CollectionPolicy
 from .netlog import RotatingJsonlLog, safe_url
 from .pre_round import ObservableEvent, PreRoundBuffer
 from .sfs_codec import SfsDecoder, binary_summary, dependency_report, unwrap_browser_event
@@ -162,12 +164,18 @@ class SessionStale(RuntimeError):
 
 
 class Collector:
+    # Class-level default keeps instances built without __init__ on the original
+    # (forensic, nothing filtered) behaviour.
+    policy: CollectionPolicy = CollectionPolicy(FORENSIC)
+
     def __init__(self, cfg=None):
         self.cfg = cfg or load_config()
+        self.policy = CollectionPolicy(self.cfg.collection_mode, profile_for_game(self.cfg.get("game_id")))
         self.store = Store.from_config(self.cfg)
         logs = self.cfg.logs_dir
         self.netlog = RotatingJsonlLog(logs / "network" / "game_network.jsonl",
-                                       int(self.cfg["network_log_max_bytes"]), int(self.cfg["network_log_backups"]))
+                                       int(self.cfg["network_log_max_bytes"]), int(self.cfg["network_log_backups"]),
+                                       record_filter=self.policy.keep_record)
         self.tracker = RoundTracker(self.store, self.cfg, netlog=self.netlog)
         self.decoder = SfsDecoder()
         self.pre_round = PreRoundBuffer(max_events=int(self.cfg["pre_round_max_events"]), max_age_s=float(self.cfg["pre_round_window_s"]))
@@ -178,6 +186,8 @@ class Collector:
         self.session_id = uuid.uuid4().hex
         self.collector_run_id = None
         self._event_index = 0
+        # Session-specific (never a global meta overwrite): which mode this session ran in.
+        self.store.record_collection_session(self.session_id, self.cfg.collection_mode)
 
     @staticmethod
     def _event_round_id(params):
@@ -204,6 +214,12 @@ class Collector:
                        frame_index=None, packet_index=None, frame_size=None,
                        packet_size=None, packet_offset=None, packet_end=None,
                        inter_arrival_ms=None, event_id=None):
+        # Pre-round evidence must obey the collection policy at admission time.
+        # The network log filter alone is too late: noisy SFS traffic would otherwise
+        # consume the bounded buffer and generate a continuous overflow storm.
+        # Forensic mode intentionally preserves the original capture-all behaviour.
+        if not self.policy.forensic and not self.policy.keep_sfs_packet(command, params):
+            return
         dropped = self.pre_round.add(ObservableEvent(
             event_id=event_id,
             timestamp=timestamp,
@@ -284,7 +300,7 @@ class Collector:
         frame_id = f"{self.session_id}:frame:{frame_index}"
         frame_event_id = self._next_event_id(f"frame{frame_index}")
         raw_b64 = base64.b64encode(bytes(data)).decode("ascii")
-        self.netlog.write({
+        frame_record = {
             "kind": "ws_binary_frame", "schema_version": 3,
             "session_id": self.session_id, "collector_run_id": self.collector_run_id,
             "event_id": frame_event_id, "frame_id": frame_id,
@@ -294,8 +310,31 @@ class Collector:
             "inter_arrival_ms": inter_arrival_ms,
             "encoding": "base64", "payload_b64": raw_b64, "payload_complete": True,
             "compression": "unknown", **summary,
-        })
-        res = self.decoder.decode_frame(data)
+        }
+        if self.policy.forensic:
+            # Forensic: raw evidence is persisted before decoding, exactly as before.
+            self.netlog.write(frame_record)
+        try:
+            res = self.decoder.decode_frame(data)
+        except Exception as exc:
+            if self.policy.forensic:
+                raise  # unchanged: raw frame is already persisted; the caller logs frame_handler_error
+            # Research/minimal drop irrelevant frames only AFTER a successful decode. A decoder
+            # exception means relevance is unknown, so keep the raw frame as integrity evidence.
+            self.netlog.write({
+                "kind": "ws_binary_decode_exception", "schema_version": 3,
+                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
+                "event_id": frame_event_id, "frame_id": frame_id,
+                "url": safe_url(ws_url), "frame_index": frame_index,
+                "received_at": received_at, "received_monotonic": received_monotonic,
+                "timestamp_provenance": "collector_received_at",
+                "error_type": type(exc).__name__, "error": str(exc),
+                "encoding": "base64", "payload_b64": raw_b64, "payload_complete": True,
+                **summary,
+            })
+            return
+        if not self.policy.forensic and self._keep_decoded_frame(res):
+            self.netlog.write(frame_record)
         if not res.decoder_available:
             self.netlog.write({"kind": "ws_binary_undecoded", "schema_version": 3,
                                "session_id": self.session_id, "collector_run_id": self.collector_run_id,
@@ -377,8 +416,82 @@ class Collector:
                 **summary,
             })
 
+    async def on_http_response(self, resp) -> None:
+        received_at = time.time()
+        record = {
+            "kind": "http_response",
+            "session_id": self.session_id,
+            "collector_run_id": self.collector_run_id,
+            "event_id": self._next_event_id("http-response"),
+            "received_at": received_at,
+            "received_monotonic": time.monotonic(),
+            "timestamp_provenance": "collector_received_at",
+            "url": safe_url(resp.url),
+            "status": resp.status,
+        }
+        # Research mode reads JSON/text bodies only to look for fairness evidence;
+        # the record (and body) is persisted only if the detector finds some.
+        headers = getattr(resp, "headers", None) or {}
+        plan = self.policy.http_body_plan(
+            headers.get("content-type"), headers.get("content-length"), resp.status)
+        inspect_only = plan == HTTP_BODY_INSPECT and not self.cfg["log_http_bodies"]
+        if plan == HTTP_BODY_OVERSIZED and not self.cfg["log_http_bodies"]:
+            self._http_body_uninspected(resp, "oversized", headers)
+        if self.cfg["log_http_bodies"] or inspect_only:
+            try:
+                body = await resp.body()
+                try:
+                    record["body"] = body.decode("utf-8")
+                    record["body_encoding"] = "utf-8"
+                except UnicodeDecodeError:
+                    record["body"] = base64.b64encode(body).decode("ascii")
+                    record["body_encoding"] = "base64"
+                if (plan != HTTP_BODY_SKIP and len(body) > HTTP_INSPECT_MAX_BYTES
+                        and not self.policy.forensic):
+                    self._http_body_uninspected(resp, "oversized", headers)
+            except Exception as exc:
+                record["body_error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                if inspect_only:
+                    self._http_body_uninspected(resp, "body_read_failed", headers,
+                                                error=f"{type(exc).__name__}: {exc}")
+        if not self.netlog.write(record):
+            self.netlog.write({
+                "kind": "collector_error",
+                "session_id": self.session_id,
+                "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id("response-write-error"),
+                "received_at": time.time(),
+                "timestamp_provenance": "collector_received_at",
+                "error": "HTTP response evidence persistence failed",
+            })
+
+    def _http_body_uninspected(self, resp, reason: str, headers, error: str | None = None) -> None:
+        """A JSON/text response whose body could not be checked for fairness evidence."""
+        self.netlog.write({
+            "kind": "http_body_uninspected",
+            "session_id": self.session_id,
+            "collector_run_id": self.collector_run_id,
+            "event_id": self._next_event_id("http-body-uninspected"),
+            "received_at": time.time(),
+            "timestamp_provenance": "collector_received_at",
+            "url": safe_url(resp.url), "status": resp.status,
+            "content_type": headers.get("content-type"),
+            "content_length": headers.get("content-length"),
+            "reason": reason, "error": error,
+        })
+
+    def _keep_decoded_frame(self, res) -> bool:
+        """Policy decision for a decoded frame. A policy bug must never drop evidence."""
+        try:
+            return self.policy.keep_binary_frame(res.commands if res.decoder_available else ())
+        except Exception:
+            return True
+
     def on_text_frame(self, text: str, ws_url: str) -> None:
-        if self.cfg["log_text_frames"]:
+        if self.policy.keep_text_frame(text, self.cfg["log_text_frames"]):
             limit = 20000
             retained = text[:limit]
             received_at = time.time()
@@ -413,7 +526,7 @@ class Collector:
                     browser_timestamp = None
             timestamp_provenance = "browser_date_now" if browser_timestamp is not None else "collector_received_at"
             browser_event_id = self._next_event_id("browser")
-            self.netlog.write({
+            browser_event_record = {
                 "kind": "browser_event",
                 "schema_version": 3,
                 "session_id": self.session_id,
@@ -423,7 +536,9 @@ class Collector:
                 "timestamp": browser_timestamp,
                 "timestamp_provenance": timestamp_provenance,
                 "raw_event": ev,
-            })
+            }
+            if self.policy.forensic:
+                self.netlog.write(browser_event_record)
             if isinstance(ev, dict) and ev.get("event_type") == "browserHookError":
                 data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
                 self.netlog.write({
@@ -455,6 +570,8 @@ class Collector:
                 })
                 continue
             unwrapped = unwrap_browser_event(ev)
+            if not self.policy.forensic and self.policy.keep_browser_event(unwrapped):
+                self.netlog.write(browser_event_record)
             if unwrapped is None:
                 self.netlog.write({
                     "kind": "browser_event_unhandled",
@@ -1027,6 +1144,7 @@ class Collector:
                             else:
                                 self.on_text_frame(str(payload), url)
                         except Exception as exc:
+                            binary = isinstance(payload, (bytes, bytearray, memoryview))
                             self.netlog.write({
                                 "kind": "frame_handler_error",
                                 "session_id": self.session_id,
@@ -1035,6 +1153,9 @@ class Collector:
                                 "received_at": time.time(),
                                 "timestamp_provenance": "collector_received_at",
                                 "url": safe_url(url),
+                                "frame_index": self._frame_index if binary else None,
+                                "frame_id": (f"{self.session_id}:frame:{self._frame_index}"
+                                             if binary else None),
                                 "error": f"{type(exc).__name__}: {exc}",
                             })
                     ws.on("framereceived", received)
@@ -1053,42 +1174,7 @@ class Collector:
                     ws.on("close", closed)
 
                 async def on_response(resp):
-                    received_at = time.time()
-                    record = {
-                        "kind": "http_response",
-                        "session_id": self.session_id,
-                        "collector_run_id": self.collector_run_id,
-                        "event_id": self._next_event_id("http-response"),
-                        "received_at": received_at,
-                        "received_monotonic": time.monotonic(),
-                        "timestamp_provenance": "collector_received_at",
-                        "url": safe_url(resp.url),
-                        "status": resp.status,
-                    }
-                    if self.cfg["log_http_bodies"]:
-                        try:
-                            body = await resp.body()
-                            try:
-                                record["body"] = body.decode("utf-8")
-                                record["body_encoding"] = "utf-8"
-                            except UnicodeDecodeError:
-                                record["body"] = base64.b64encode(body).decode("ascii")
-                                record["body_encoding"] = "base64"
-                        except Exception as exc:
-                            record["body_error"] = {
-                                "type": type(exc).__name__,
-                                "message": str(exc),
-                            }
-                    if not self.netlog.write(record):
-                        self.netlog.write({
-                            "kind": "collector_error",
-                            "session_id": self.session_id,
-                            "collector_run_id": self.collector_run_id,
-                            "event_id": self._next_event_id("response-write-error"),
-                            "received_at": time.time(),
-                            "timestamp_provenance": "collector_received_at",
-                            "error": "HTTP response evidence persistence failed",
-                        })
+                    await self.on_http_response(resp)
 
                 def attach(page):
                     page.on("websocket", on_ws)

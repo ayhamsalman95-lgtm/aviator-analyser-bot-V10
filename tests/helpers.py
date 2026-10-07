@@ -36,7 +36,8 @@ class TempProject:
 
     def new_store(self):
         return Store(self.cfg.db_path, self.cfg.structured_dir, self.cfg.batches_dir,
-                     batch_size=int(self.cfg["batch_size"]), clock=self.clock)
+                     batch_size=int(self.cfg["batch_size"]), clock=self.clock,
+                     collection_mode=self.cfg.collection_mode)
 
     def reopen(self):
         self.store.close()

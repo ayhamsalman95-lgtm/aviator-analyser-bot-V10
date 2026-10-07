@@ -12,7 +12,10 @@ import re
 import time
 from typing import Awaitable, Callable, Optional
 
+from .modes import DEFAULT_MODE, FORENSIC, resolve_mode
+
 _MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+_SAFE_SOURCE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 
 
 def escape_md_v2(text: str) -> str:
@@ -40,12 +43,14 @@ def format_prediction(payload: dict) -> str:
 
 
 def format_result(payload: dict, store=None) -> str:
-    lines = [f"🆕 Round {payload['round_id']}: {float(payload['multiplier']):.2f}x"]
-    if store is not None:
-        pred = store.get_prediction(int(payload["round_id"]))
-        if pred is not None:
-            lines.append("Pre-round estimate was recorded.")
-    return "\n".join(lines)
+    """Single-line round result: ``ROUND <round_id> -> <multiplier>x source=<source>``.
+
+    Deliberately carries no hashes, seeds, debug data or error text.
+    """
+    source = str(payload.get("source") or "")
+    if not _SAFE_SOURCE.match(source):
+        source = "unknown"
+    return f"ROUND {int(payload['round_id'])} -> {float(payload['multiplier']):.2f}x source={source}"
 
 
 def format_fairness(payload: dict) -> str:
@@ -55,11 +60,13 @@ def format_fairness(payload: dict) -> str:
             f"{payload.get('detail') or ''}")
 
 
-def format_event(kind: str, payload: dict, store=None) -> Optional[str]:
-    if kind == "prediction_frozen":
-        return format_prediction(payload)
+def format_event(kind: str, payload: dict, store=None, mode: str = DEFAULT_MODE) -> Optional[str]:
     if kind == "round_completed":
         return format_result(payload, store)
+    if mode != FORENSIC:
+        return None  # minimal/research: round results only
+    if kind == "prediction_frozen":
+        return format_prediction(payload)
     if kind == "fairness_update":
         if payload.get("status") in {"incomplete", "not_verifiable"}:
             return None  # don't spam partial evidence
@@ -79,6 +86,7 @@ class Notifier:
         self.clock = clock
         self.max_attempts = int(cfg["telegram_max_attempts"]) if cfg else 5
         self.max_age = float(cfg["telegram_event_max_age_s"]) if cfg else 900.0
+        self.mode = resolve_mode(cfg.get("collection_mode")) if cfg else DEFAULT_MODE
 
     def _stale(self, ev) -> bool:
         if ev["kind"] == "prediction_frozen" and ev["round_id"] is not None:
@@ -94,7 +102,7 @@ class Notifier:
         for ev in self.store.pending_outbox(now - self.max_age):
             payload = json.loads(ev["payload_json"])
             stale = self._stale(ev)
-            text = None if stale else format_event(ev["kind"], payload, self.store)
+            text = None if stale else format_event(ev["kind"], payload, self.store, self.mode)
             for sub in subs:
                 chat_id = int(sub["chat_id"])
                 if sub["created_at"] > ev["created_at"]:

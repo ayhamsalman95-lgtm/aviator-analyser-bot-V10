@@ -9,6 +9,9 @@ Tables
   manual_entries         /add values -- never mixed with canonical research data
   subscribers, outbox, deliveries   Telegram decoupling (collector never talks to Telegram)
   batches, meta
+
+evidence_observations (large provenance table) is populated in research and forensic
+collection modes only; minimal mode keeps just rounds and explicit fairness evidence.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ from typing import Any, Iterable, Optional
 
 from .fairness import verify_round
 from .jsonl import append_jsonl
+from .modes import DEFAULT_MODE, MINIMAL, resolve_mode
 from .validation import RoundValidationError, validate_round
 
 SCHEMA_VERSION = 3
@@ -162,7 +166,9 @@ def _sha256_json(obj: Any) -> str:
 
 class Store:
     def __init__(self, db_path: Path, structured_dir: Path, batches_dir: Path,
-                 batch_size: int = 1000, clock=time.time, max_multiplier: float = 1_000_000.0):
+                 batch_size: int = 1000, clock=time.time, max_multiplier: float = 1_000_000.0,
+                 collection_mode: str = DEFAULT_MODE):
+        self.collection_mode = resolve_mode(collection_mode)
         self.db_path = Path(db_path)
         self.structured_dir = Path(structured_dir)
         self.batches_dir = Path(batches_dir)
@@ -185,6 +191,10 @@ class Store:
         self.conn.executescript(SCHEMA)
         self._migrate_schema(previous_version)
         self.set_meta("schema_version", str(SCHEMA_VERSION))
+        # NOTE: the collection mode is deliberately NOT written to a global meta key.
+        # Any process (bot, scripts, tests) may open a Store, and a shared "current mode"
+        # would be silently rewritten by whichever opened last. Collectors record their
+        # own mode per session with record_collection_session().
 
     def _table_columns(self, table: str) -> set[str]:
         rows = self.conn.execute("PRAGMA table_info(" + table + ")").fetchall()
@@ -232,7 +242,8 @@ class Store:
     @classmethod
     def from_config(cls, cfg) -> "Store":
         return cls(cfg.db_path, cfg.structured_dir, cfg.batches_dir,
-                   batch_size=int(cfg["batch_size"]), max_multiplier=float(cfg["max_multiplier"]))
+                   batch_size=int(cfg["batch_size"]), max_multiplier=float(cfg["max_multiplier"]),
+                   collection_mode=cfg.get("collection_mode", DEFAULT_MODE))
 
     # ------------------------------------------------------------------ paths
     @property
@@ -261,6 +272,34 @@ class Store:
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT INTO meta(key,value) VALUES(?,?) "
                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def record_collection_session(self, session_id: str, mode: Optional[str] = None) -> bool:
+        """Record the collection mode of one collector session (append-only).
+
+        Stored as ``meta`` key ``collection_session:<session_id>`` holding the mode, the
+        start time and the highest ``rounds.seq`` at that moment, so rounds with a larger
+        seq were collected during or after this session. Existing rows are never
+        overwritten and no other process can change them. Returns True when newly recorded.
+        """
+        mode = resolve_mode(mode if mode is not None else self.collection_mode)
+        start_seq = self.conn.execute("SELECT COALESCE(MAX(seq),0) FROM rounds").fetchone()[0]
+        value = json.dumps({"session_id": str(session_id), "mode": mode,
+                            "started_at": self.clock(), "start_round_seq": int(start_seq)},
+                           sort_keys=True)
+        cur = self.conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
+                                (f"collection_session:{session_id}", value))
+        return bool(cur.rowcount)
+
+    def collection_sessions(self) -> list[dict]:
+        """All recorded collector sessions, oldest first."""
+        out = []
+        for row in self.conn.execute("SELECT value FROM meta WHERE key GLOB 'collection_session:*'"):
+            try:
+                out.append(json.loads(row[0]))
+            except (TypeError, ValueError):
+                continue
+        out.sort(key=lambda d: (d.get("started_at", 0), d.get("start_round_seq", 0)))
+        return out
 
     def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -333,7 +372,8 @@ class Store:
                 "INSERT INTO rounds(round_id,multiplier,cents,source,origin,seq,first_seen_at,raw_json)"
                 " VALUES(?,?,?,?,?,?,?,?)",
                 (v.round_id, v.multiplier, v.cents, source, origin, seq, now,
-                 None if raw is None else json.dumps(raw, ensure_ascii=False, default=str)))
+                 None if raw is None or self.collection_mode == MINIMAL
+                 else json.dumps(raw, ensure_ascii=False, default=str)))
             if notify:
                 self._outbox_insert(f"result:{v.round_id}", "round_completed", v.round_id,
                                     {"round_id": v.round_id, "multiplier": v.multiplier, "source": source})
@@ -423,6 +463,8 @@ class Store:
         context_round_id: Optional[int] = None, algorithm: Optional[str] = None,
         semantic_type: Optional[str] = None, provenance: Optional[dict[str, Any]] = None,
     ) -> int:
+        if self.collection_mode == MINIMAL:
+            return 0  # provenance tables are research/forensic only
         p = provenance or {}
         value_text = json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value)
         cur = self.conn.execute(
