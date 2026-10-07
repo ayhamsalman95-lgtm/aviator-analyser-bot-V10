@@ -21,3 +21,11 @@ commands    Telegram command logic (library independent)
 
 __version__ = "12.0.0"
 GAME_ID = 52358
+
+# Install the optional browser Network API diagnostic before collector.py imports
+# Playwright. It is isolated and failure-safe, so normal collection is unchanged.
+try:
+    from .browser_network_probe import install as _install_browser_network_probe
+    _install_browser_network_probe()
+except Exception:
+    pass
