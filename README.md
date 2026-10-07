@@ -63,7 +63,28 @@ Set `"collection_mode"` in `config.json` (`minimal`, `research` or `forensic`; d
 
 **Research mode does not store** heartbeats, ping/pong, bet and cash-out feeds, other game events, UI events, or text frames that carry no fairness evidence. `log_text_frames` does not widen research mode. Errors, queue overflows, log rotation and undecodable frames are persisted in every mode so data loss stays visible.
 
-Research defaults in `config.json`: `network_log_max_bytes` 5000000, `network_log_backups` 3, `log_text_frames` false. Existing databases stay compatible: no tables are removed and the `evidence_observations` provenance table is simply left unpopulated in `minimal` mode.
+### Per-mode logging defaults
+
+`network_log_max_bytes`, `network_log_backups` and `log_text_frames` are `null` in `config.json`, which means "use the selected mode's default". The profiles live in one place (`MODE_LOG_PROFILES` in `aviator/modes.py`):
+
+| Mode | `network_log_max_bytes` | `network_log_backups` | `log_text_frames` |
+|------|-------------------------|-----------------------|-------------------|
+| `minimal` | 5,000,000 | 3 | false |
+| `research` | 5,000,000 | 3 | false |
+| `forensic` | 20,000,000 | 5 | true |
+
+Switching to `forensic` therefore needs no other config edits. A number or boolean written in `config.json` still overrides the mode default. In research mode `log_text_frames` does not widen collection; text frames are stored only when they carry fairness evidence. Forensic mode still writes each raw binary frame before decoding it.
+
+### Decode failures and HTTP evidence in research mode
+
+- Irrelevant frames are dropped only **after** a successful decode. If the decoder raises, research and minimal mode store a `ws_binary_decode_exception` record with the raw frame, its hash, `frame_id` and `frame_index`. Partial decodes, malformed frames and an unavailable decoder are already recorded as `sfs_decode_error` / `ws_binary_undecoded` with the raw payload.
+- Ordinary HTTP traffic is ignored. Successful JSON/plain-text responses are inspected without being stored (`log_http_bodies` stays off), and a response is persisted, body included, only when it contains fairness fields (`serverSeed`, `revealedServerSeed`, `playerSeeds`, `clientSeeds`, `serverSeedSHA256`, `roundHashSHA512`, other known hash fields, or a `fairness` object). Hash fields stay unclassified observations unless their digest relationship is proven. A JSON body that cannot be inspected (over 2 MB or unreadable) leaves an `http_body_uninspected` record.
+
+### Collection mode metadata
+
+The database does not keep a global "current mode", because the bot, scripts and tests can open it too. Each collector session instead writes an append-only `meta` row `collection_session:<session_id>` with its mode, start time and the highest `rounds.seq` at that moment (`Store.collection_sessions()` lists them). Rounds with a larger `seq` were collected during or after that session. The schema version and tables are unchanged.
+
+Existing databases stay compatible: no tables are removed, and the `evidence_observations` provenance table is simply left unpopulated in `minimal` mode.
 
 Use `research` day to day. Switch to `forensic` only while investigating a specific problem, because it writes far more data.
 

@@ -95,7 +95,8 @@ class ModeSelectionTests(unittest.TestCase):
             try:
                 self.assertEqual(p.cfg.collection_mode, expected)
                 self.assertEqual(p.store.collection_mode, expected)
-                self.assertEqual(p.store.get_meta("collection_mode"), expected)
+                # no global metadata: the mode is recorded per collector session instead
+                self.assertIsNone(p.store.get_meta("collection_mode"))
                 self.assertEqual(CollectionPolicy(p.cfg.collection_mode).mode, expected)
             finally:
                 p.cleanup()
@@ -111,9 +112,10 @@ class ModeSelectionTests(unittest.TestCase):
         cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg["collection_mode"], "research")
         self.assertEqual(cfg["game_id"], 52358)
-        self.assertEqual(cfg["network_log_max_bytes"], 5000000)
-        self.assertEqual(cfg["network_log_backups"], 3)
-        self.assertIs(cfg["log_text_frames"], False)
+        # null = "follow the collection mode" (tests/test_research_fixes.py checks the values)
+        for key in ("network_log_max_bytes", "network_log_backups", "log_text_frames"):
+            self.assertIn(key, cfg)
+            self.assertIsNone(cfg[key], key)
         self.assertIn("thresholds", cfg)  # existing settings are kept
         self.assertEqual(load_config().collection_mode, RESEARCH)
 

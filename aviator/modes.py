@@ -32,6 +32,25 @@ COLLECTION_MODES = (MINIMAL, RESEARCH, FORENSIC)
 DEFAULT_MODE = RESEARCH
 
 
+# Per-mode logging profile. These are the single source of truth for the settings that
+# differ between modes; config.json leaves them null so the mode decides, and an explicit
+# value in config.json (or an override) still wins. Forensic keeps the original defaults.
+_RESEARCH_LOG_PROFILE = {"network_log_max_bytes": 5_000_000, "network_log_backups": 3,
+                         "log_text_frames": False}
+MODE_LOG_PROFILES: dict[str, dict[str, Any]] = {
+    MINIMAL: dict(_RESEARCH_LOG_PROFILE),
+    RESEARCH: dict(_RESEARCH_LOG_PROFILE),
+    FORENSIC: {"network_log_max_bytes": 20_000_000, "network_log_backups": 5,
+               "log_text_frames": True},
+}
+MODE_AWARE_KEYS = tuple(MODE_LOG_PROFILES[RESEARCH])
+
+
+def mode_log_defaults(mode: Any) -> dict[str, Any]:
+    """Logging defaults for ``mode`` (a copy; safe to mutate)."""
+    return dict(MODE_LOG_PROFILES[resolve_mode(mode)])
+
+
 def resolve_mode(value: Any) -> str:
     """Normalise a configured mode. ``None`` -> default; anything unknown raises."""
     if value is None:
@@ -60,20 +79,47 @@ INTEGRITY_KINDS = frozenset({
     "tracker_error", "frame_handler_error", "collector_error", "network_log_rotation",
     "browser_hook_error", "browser_queue_overflow", "browser_drain_error",
     "sfs_decode_error", "ws_binary_undecoded", "fairness_scan_truncated",
-    "sfs_round_result_invalid",
+    "sfs_round_result_invalid", "ws_binary_decode_exception", "http_body_uninspected",
 })
-INTEGRITY_SUFFIXES = ("_error", "_failure", "_overflow")
+INTEGRITY_SUFFIXES = ("_error", "_failure", "_overflow", "_exception")
 # Small records that mark connection gaps and round boundaries: research + forensic.
 LIFECYCLE_KINDS = frozenset({
     "ws_open", "ws_close", "sfs_change_state", "sfs_change_state_no_round",
     "sfs_init_backfill", "sfs_init_without_roundsInfo", "sfs_fairness_response_empty",
 })
-# Frame-level records whose relevance is only known after decoding. The collector
-# decides before writing them, so research trusts them here.
-PREDECIDED_KINDS = frozenset({"ws_binary_frame", "browser_event"})
+# Records the collector has already judged on the COMPLETE frame/event (ws_text is stored
+# truncated, so re-judging its payload here would wrongly drop long fairness frames).
+PREDECIDED_KINDS = frozenset({"ws_binary_frame", "browser_event", "ws_text"})
 
-_TEXT_PREFILTER = ("seed", "sha256", "sha512")
+_TEXT_PREFILTER = ("seed", "sha256", "sha512", "fairness", "provablyfair", "provably_fair")
 _MAX_TEXT_SCAN_CHARS = 1_000_000
+
+# HTTP bodies are inspected (never stored) in research mode to find fairness evidence.
+HTTP_INSPECT_MAX_BYTES = 2_000_000
+_HTTP_INSPECT_TYPES = ("json", "text/plain")
+HTTP_BODY_INSPECT = "inspect"      # read the body and run the fairness detector
+HTTP_BODY_OVERSIZED = "oversized"  # inspectable type but too large: record that it was not inspected
+HTTP_BODY_SKIP = "skip"            # ordinary traffic: do not even read the body
+# Keys that mark a fairness *structure* whose inner field names may be unknown to us.
+_FAIRNESS_STRUCTURE_MARKERS = ("fairness", "provablyfair")
+
+
+def _has_fairness_structure(data: Any, max_nodes: int = 500) -> bool:
+    """True if a dict key names a fairness structure holding a non-empty object/list."""
+    stack = [data]
+    nodes = 0
+    while stack and nodes < max_nodes:
+        node = stack.pop()
+        nodes += 1
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, (dict, list)):
+                    if value and any(m in norm(key) for m in _FAIRNESS_STRUCTURE_MARKERS):
+                        return True
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(v for v in node[:500] if isinstance(v, (dict, list)))
+    return False
 
 
 class CollectionPolicy:
@@ -104,7 +150,9 @@ class CollectionPolicy:
         """True when ``data`` carries Spribe/profile fairness fields.
 
         ``explicit_only`` additionally requires core evidence (seeds or confirmed
-        hashes) tied to a round id inside the same object.
+        hashes) tied to a round id inside the same object. Without it, a named fairness
+        structure (e.g. a ``fairness`` object) also counts, so evidence whose inner field
+        names are not yet understood is still preserved as an observation.
         """
         if not isinstance(data, (dict, list)):
             return False
@@ -117,7 +165,7 @@ class CollectionPolicy:
                     return True
             elif core or rec.crypto_observations:
                 return True
-        return False
+        return False if explicit_only else _has_fairness_structure(data)
 
     # ------------------------------------------------------------ SFS packets
     def keep_sfs_packet(self, command: Any, params: Any) -> bool:
@@ -162,6 +210,29 @@ class CollectionPolicy:
             return False
         return self._json_has_evidence(text)
 
+    def http_body_plan(self, content_type: Any, content_length: Any, status: Any = 200) -> str:
+        """Decide whether a response body must be read to look for fairness evidence.
+
+        Only research mode inspects bodies on its own (forensic follows ``log_http_bodies``,
+        minimal never reads them), and only for successful JSON/plain-text responses. This
+        never enables general body logging: bodies that are not fairness-bearing are dropped.
+        """
+        if not self.research:
+            return HTTP_BODY_SKIP
+        try:
+            ok = 200 <= int(status) < 300 and int(status) != 204
+        except (TypeError, ValueError):
+            ok = False
+        kind = str(content_type or "").lower()
+        if not ok or not any(t in kind for t in _HTTP_INSPECT_TYPES):
+            return HTTP_BODY_SKIP
+        try:
+            if content_length is not None and int(content_length) > HTTP_INSPECT_MAX_BYTES:
+                return HTTP_BODY_OVERSIZED
+        except (TypeError, ValueError):
+            pass
+        return HTTP_BODY_INSPECT
+
     def keep_http_response(self, record: dict) -> bool:
         if self.forensic:
             return True
@@ -170,6 +241,8 @@ class CollectionPolicy:
         body = record.get("body")
         if not isinstance(body, str) or record.get("body_encoding") not in (None, "utf-8"):
             return False
+        if len(body) > HTTP_INSPECT_MAX_BYTES:
+            return False  # not inspectable; the collector records http_body_uninspected
         return self._json_has_evidence(body)
 
     def _json_has_evidence(self, text: str) -> bool:
@@ -195,8 +268,6 @@ class CollectionPolicy:
             return False
         if kind in LIFECYCLE_KINDS or kind in PREDECIDED_KINDS:
             return True
-        if kind == "ws_text":
-            return self.keep_text_frame(record.get("payload"), True)
         if kind == "http_response":
             return self.keep_http_response(record)
         return False

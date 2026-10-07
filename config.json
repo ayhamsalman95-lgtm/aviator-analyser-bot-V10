@@ -32,9 +32,9 @@
     80,
     120
   ],
-  "network_log_max_bytes": 5000000,
-  "network_log_backups": 3,
-  "log_text_frames": false,
+  "network_log_max_bytes": null,
+  "network_log_backups": null,
+  "log_text_frames": null,
   "admin_chat_ids": [],
   "telegram_poll_interval_s": 1,
   "telegram_max_attempts": 5,

@@ -191,7 +191,10 @@ class Store:
         self.conn.executescript(SCHEMA)
         self._migrate_schema(previous_version)
         self.set_meta("schema_version", str(SCHEMA_VERSION))
-        self.set_meta("collection_mode", self.collection_mode)
+        # NOTE: the collection mode is deliberately NOT written to a global meta key.
+        # Any process (bot, scripts, tests) may open a Store, and a shared "current mode"
+        # would be silently rewritten by whichever opened last. Collectors record their
+        # own mode per session with record_collection_session().
 
     def _table_columns(self, table: str) -> set[str]:
         rows = self.conn.execute("PRAGMA table_info(" + table + ")").fetchall()
@@ -269,6 +272,34 @@ class Store:
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT INTO meta(key,value) VALUES(?,?) "
                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def record_collection_session(self, session_id: str, mode: Optional[str] = None) -> bool:
+        """Record the collection mode of one collector session (append-only).
+
+        Stored as ``meta`` key ``collection_session:<session_id>`` holding the mode, the
+        start time and the highest ``rounds.seq`` at that moment, so rounds with a larger
+        seq were collected during or after this session. Existing rows are never
+        overwritten and no other process can change them. Returns True when newly recorded.
+        """
+        mode = resolve_mode(mode if mode is not None else self.collection_mode)
+        start_seq = self.conn.execute("SELECT COALESCE(MAX(seq),0) FROM rounds").fetchone()[0]
+        value = json.dumps({"session_id": str(session_id), "mode": mode,
+                            "started_at": self.clock(), "start_round_seq": int(start_seq)},
+                           sort_keys=True)
+        cur = self.conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
+                                (f"collection_session:{session_id}", value))
+        return bool(cur.rowcount)
+
+    def collection_sessions(self) -> list[dict]:
+        """All recorded collector sessions, oldest first."""
+        out = []
+        for row in self.conn.execute("SELECT value FROM meta WHERE key GLOB 'collection_session:*'"):
+            try:
+                out.append(json.loads(row[0]))
+            except (TypeError, ValueError):
+                continue
+        out.sort(key=lambda d: (d.get("started_at", 0), d.get("start_round_seq", 0)))
+        return out
 
     def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
