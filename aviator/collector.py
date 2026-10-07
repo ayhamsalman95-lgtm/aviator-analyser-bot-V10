@@ -31,8 +31,10 @@ INJECT_JS = r"""
 (() => {
   if (window.__aviatorHooked) return;
   window.__aviatorHooked = true;
-  window.__aviatorBuf = [];
-  window.__aviatorHookErrors = [];
+  // Preserve a buffer created by the browser Network API probe, if present.
+  // The probe is installed before this hook and must not lose early events.
+  if (!Array.isArray(window.__aviatorBuf)) window.__aviatorBuf = [];
+  if (!Array.isArray(window.__aviatorHookErrors)) window.__aviatorHookErrors = [];
   const QUEUE_LIMIT = 2000;
   let browserSequence = 0;
   const recordHookError = (stage, e) => {
@@ -567,6 +569,21 @@ class Collector:
                     "received_at": arrival_at,
                     "timestamp": browser_timestamp,
                     "timestamp_provenance": timestamp_provenance,
+                })
+                continue
+            # Browser Network API probe events are diagnostic records, not SFS events.
+            if isinstance(ev, dict) and ev.get("event_type") == "browserNetworkApi":
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                self.netlog.write({
+                    "kind": "browser_network_api",
+                    "schema_version": 3,
+                    "session_id": self.session_id,
+                    "collector_run_id": self.collector_run_id,
+                    "event_id": browser_event_id,
+                    "received_at": arrival_at,
+                    "timestamp": browser_timestamp,
+                    "timestamp_provenance": timestamp_provenance,
+                    **data,
                 })
                 continue
             unwrapped = unwrap_browser_event(ev)
