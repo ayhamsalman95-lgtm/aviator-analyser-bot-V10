@@ -653,7 +653,7 @@ class Collector:
                     # UI metadata only, so we can distinguish the menu icon from the payout dropdown.
                     try:
                         icon_inventory = await frame.evaluate("""() => {
-                            const clean = (v) => String(v || "").replace(/\s+/g, " ").trim().slice(0, 180);
+                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
                             const visible = (el) => {
                                 const r = el.getBoundingClientRect();
                                 const cs = getComputedStyle(el);
