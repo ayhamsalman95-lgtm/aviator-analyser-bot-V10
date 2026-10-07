@@ -751,7 +751,7 @@ class Collector:
                             # Capture only visible UI metadata/text after the menu click.
                             try:
                                 visible_menu = await frame.evaluate("""() => {
-                                    const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
+                                    const clean = (v) => String(v || "").replace(/ +/g, " ").trim().slice(0, 180);
                                     const visible = (el) => {
                                         const r = el.getBoundingClientRect();
                                         const cs = getComputedStyle(el);
@@ -920,7 +920,7 @@ class Collector:
                     # We inspect upper-right hit-test points and their ancestor metadata without clicking them.
                     try:
                         hit_probe = await frame.evaluate("""() => {
-                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+                            const clean = (v) => String(v || "").replace(/ +/g, " ").trim().slice(0, 120);
                             const w = window.innerWidth || document.documentElement.clientWidth || 0;
                             const h = window.innerHeight || document.documentElement.clientHeight || 0;
                             const points = [
@@ -972,7 +972,7 @@ class Collector:
                     # navigation/menu controls by class/tag/icon and geometry.
                     try:
                         menu_inventory = await frame.evaluate("""() => {
-                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+                            const clean = (v) => String(v || "").replace(/ +/g, " ").trim().slice(0, 160);
                             const visible = (el) => {
                                 const r = el.getBoundingClientRect();
                                 const cs = getComputedStyle(el);
@@ -1049,7 +1049,7 @@ class Collector:
                                 return !!(r.width && r.height && cs.visibility !== "hidden" &&
                                            cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05);
                             };
-                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 140);
+                            const clean = (v) => String(v || "").replace(/ +/g, " ").trim().slice(0, 140);
                             const els = Array.from(document.querySelectorAll(
                                 "button,[role='button'],[aria-label],a,[data-testid]"
                             )).filter(visible).map((el) => {
@@ -1076,11 +1076,18 @@ class Collector:
                             "frame_url": safe_url(frame.url),
                             "candidates": probe,
                         })
+                    except Exception as probe_exc:
+                        self.netlog.write({
+                            "kind": "fairness_dom_probe_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(probe_exc),
+                        })
+
                     # Read-only diagnostic for the control that exposes last-round information.
                     # This does not click anything; it records only visible UI metadata.
                     try:
                         round_info_probe = await frame.evaluate("""() => {
-                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
+                            const clean = (v) => String(v || "").replace(/ +/g, " ").trim().slice(0, 180);
                             const visible = (el) => {
                                 const r = el.getBoundingClientRect();
                                 const cs = getComputedStyle(el);
