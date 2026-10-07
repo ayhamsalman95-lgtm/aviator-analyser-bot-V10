@@ -84,6 +84,38 @@ class ExtractTests(unittest.TestCase):
                                               "bbbb2222", {"clientSeed": "cccc3333"}]}
         self.assertEqual(extract_fairness(data)[0].player_seeds, ["aaaa1111", "bbbb2222", "cccc3333"])
 
+    def test_spribe_profile_confirms_seed_hash_fields(self):
+        data = {
+            "roundId": 4112625,
+            "serverSeed": VEC["server_seed"],
+            "playerSeeds": VEC["player_seeds"],
+            "serverSeedSHA256": VEC["commitment_sha256"],
+            "roundHashSHA512": VEC["sha512"],
+        }
+        recs = extract_fairness(data, profile=__import__("aviator.extract", fromlist=["SPRIBE_AVIATOR_PROFILE"]).SPRIBE_AVIATOR_PROFILE)
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertEqual(rec.commitment, VEC["commitment_sha256"])
+        self.assertEqual(rec.round_hash, VEC["sha512"])
+        self.assertEqual(
+            {o["semantic_type"] for o in rec.crypto_observations},
+            {"commitment_sha256", "round_hash_sha512"},
+        )
+
+    def test_spribe_profile_does_not_promote_wrong_hashes(self):
+        data = {
+            "roundId": 4112625,
+            "serverSeed": VEC["server_seed"],
+            "playerSeeds": VEC["player_seeds"],
+            "serverSeedSHA256": "a" * 64,
+            "roundHashSHA512": "b" * 128,
+        }
+        from aviator.extract import SPRIBE_AVIATOR_PROFILE
+        rec = extract_fairness(data, profile=SPRIBE_AVIATOR_PROFILE)[0]
+        self.assertIsNone(rec.commitment)
+        self.assertIsNone(rec.round_hash)
+        self.assertEqual({o["semantic_type"] for o in rec.crypto_observations}, {"unknown"})
+
     def test_no_nonce(self):
         recs = extract_fairness({"roundId": 5, "nonce": 77, "serverSeed": "SeedSeedSeed1234"})
         self.assertFalse(hasattr(recs[0], "nonce"))
