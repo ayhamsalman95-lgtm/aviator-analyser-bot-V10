@@ -1203,6 +1203,61 @@ class Collector:
                             })
                     ws.on("framereceived", received)
 
+                    def sent(payload):
+                        try:
+                            sent_at = time.time()
+                            sent_monotonic = time.monotonic()
+                            binary = isinstance(payload, (bytes, bytearray, memoryview))
+                            if binary:
+                                raw = bytes(payload)
+                                self.netlog.write({
+                                    "kind": "ws_frame_sent",
+                                    "schema_version": 3,
+                                    "session_id": self.session_id,
+                                    "collector_run_id": self.collector_run_id,
+                                    "event_id": self._next_event_id("ws-frame-sent"),
+                                    "sent_at": sent_at,
+                                    "sent_monotonic": sent_monotonic,
+                                    "timestamp_provenance": "collector_sent_at",
+                                    "url": safe_url(url),
+                                    "direction": "outgoing",
+                                    "encoding": "base64",
+                                    "payload_b64": base64.b64encode(raw).decode("ascii"),
+                                    "payload_complete": True,
+                                    "frame_size": len(raw),
+                                    "sha256": hashlib.sha256(raw).hexdigest(),
+                                })
+                            else:
+                                text = str(payload)
+                                self.netlog.write({
+                                    "kind": "ws_text_frame_sent",
+                                    "schema_version": 3,
+                                    "session_id": self.session_id,
+                                    "collector_run_id": self.collector_run_id,
+                                    "event_id": self._next_event_id("ws-text-frame-sent"),
+                                    "sent_at": sent_at,
+                                    "sent_monotonic": sent_monotonic,
+                                    "timestamp_provenance": "collector_sent_at",
+                                    "url": safe_url(url),
+                                    "direction": "outgoing",
+                                    "encoding": "text",
+                                    "payload": text,
+                                    "payload_complete": True,
+                                })
+                        except Exception as exc:
+                            self.netlog.write({
+                                "kind": "ws_frame_sent_handler_error",
+                                "schema_version": 3,
+                                "session_id": self.session_id,
+                                "collector_run_id": self.collector_run_id,
+                                "event_id": self._next_event_id("ws-frame-sent-error"),
+                                "sent_at": time.time(),
+                                "timestamp_provenance": "collector_sent_at",
+                                "url": safe_url(url),
+                                "error": f"{type(exc).__name__}: {exc}",
+                            })
+                    ws.on("framesent", sent)
+
                     def closed(*_):
                         self.netlog.write({
                             "kind": "ws_close",
