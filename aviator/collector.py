@@ -214,6 +214,12 @@ class Collector:
                        frame_index=None, packet_index=None, frame_size=None,
                        packet_size=None, packet_offset=None, packet_end=None,
                        inter_arrival_ms=None, event_id=None):
+        # Pre-round evidence must obey the collection policy at admission time.
+        # The network log filter alone is too late: noisy SFS traffic would otherwise
+        # consume the bounded buffer and generate a continuous overflow storm.
+        # Forensic mode intentionally preserves the original capture-all behaviour.
+        if not self.policy.forensic and not self.policy.keep_sfs_packet(command, params):
+            return
         dropped = self.pre_round.add(ObservableEvent(
             event_id=event_id,
             timestamp=timestamp,
