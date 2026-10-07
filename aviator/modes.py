@@ -89,7 +89,7 @@ LIFECYCLE_KINDS = frozenset({
 })
 # Records the collector has already judged on the COMPLETE frame/event (ws_text is stored
 # truncated, so re-judging its payload here would wrongly drop long fairness frames).
-PREDECIDED_KINDS = frozenset({"ws_binary_frame", "browser_event", "ws_text"})
+PREDECIDED_KINDS = frozenset({"ws_binary_frame", "browser_event", "ws_text", "browser_network_api"})
 
 _TEXT_PREFILTER = ("seed", "sha256", "sha512", "fairness", "provablyfair", "provably_fair")
 _MAX_TEXT_SCAN_CHARS = 1_000_000
