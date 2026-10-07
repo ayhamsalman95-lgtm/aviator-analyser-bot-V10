@@ -1076,6 +1076,49 @@ class Collector:
                             "frame_url": safe_url(frame.url),
                             "candidates": probe,
                         })
+                    # Read-only diagnostic for the control that exposes last-round information.
+                    # This does not click anything; it records only visible UI metadata so the
+                    # collector can identify the exact control that triggered roundFairnessResponse.
+                    try:
+                        round_info_probe = await frame.evaluate("""() => {
+                            const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
+                            const visible = (el) => {
+                                const r = el.getBoundingClientRect();
+                                const cs = getComputedStyle(el);
+                                return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" &&
+                                       cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05;
+                            };
+                            const re = /last\\s*round|round\\s*(info|information|details|history)|previous\\s*round|fairness/i;
+                            return Array.from(document.querySelectorAll("button,[role='button'],a,[aria-label],[title],[data-testid]"))
+                                .filter(visible)
+                                .map(el => {
+                                    const r = el.getBoundingClientRect();
+                                    const text = clean(el.innerText);
+                                    const aria = clean(el.getAttribute("aria-label"));
+                                    const title = clean(el.getAttribute("title"));
+                                    const testid = clean(el.getAttribute("data-testid"));
+                                    const hay = [text, aria, title, testid, clean(el.id), clean(el.className)].join(" ");
+                                    return {tag: el.tagName.toLowerCase(), text, aria, title, testid,
+                                            id: clean(el.id), cls: clean(el.className),
+                                            x: Math.round(r.x), y: Math.round(r.y),
+                                            w: Math.round(r.width), h: Math.round(r.height),
+                                            match: re.test(hay)};
+                                })
+                                .filter(x => x.match)
+                                .slice(0, 80);
+                        }""")
+                        self.netlog.write({
+                            "kind": "fairness_round_info_control_probe",
+                            "frame_url": safe_url(frame.url),
+                            "candidates": round_info_probe,
+                        })
+                    except Exception as round_info_exc:
+                        self.netlog.write({
+                            "kind": "fairness_round_info_control_probe_error",
+                            "frame_url": safe_url(frame.url),
+                            "error": str(round_info_exc),
+                        })
+
                     except Exception as probe_exc:
                         self.netlog.write({
                             "kind": "fairness_dom_probe_error",
