@@ -163,12 +163,27 @@ def _record_from_dict(d: dict, path: str, profile: FairnessProfile = GENERIC_PRO
                 rec.round_id = None
         elif nk in SERVER_SEED_KEYS:
             rec.server_seed = _seed(v)
+        elif nk in profile.commitment_keys:
+            if isinstance(v, str) and HEX64.match(v.strip()):
+                text = v.strip().lower()
+                rec.crypto_observations.append({
+                    "field_name": str(k), "value": text, "algorithm": "SHA-256",
+                    "value_length": len(text), "semantic_type": "unknown",
+                })
+                rec.is_next_commitment = nk.startswith("next")
+        elif nk in PLAYER_SEEDS_KEYS:
+            rec.player_seeds = _player_seeds(v)
+        elif nk in profile.round_hash_keys:
+            text = v.strip() if isinstance(v, str) else None
+            if text and HEX128.match(text):
+                rec.crypto_observations.append({
+                    "field_name": str(k), "value": text.lower(), "algorithm": "SHA-512",
+                    "value_length": len(text), "semantic_type": "unknown",
+                })
         elif nk in COMMITMENT_KEYS:
             if isinstance(v, str) and HEX64.match(v.strip()):
                 rec.commitment = v.strip().lower()
                 rec.is_next_commitment = nk.startswith("next")
-        elif nk in PLAYER_SEEDS_KEYS:
-            rec.player_seeds = _player_seeds(v)
         elif nk in ROUND_HASH_KEYS:
             text = v.strip() if isinstance(v, str) else None
             if text and HEX128.match(text):
