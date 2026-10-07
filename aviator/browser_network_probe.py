@@ -166,6 +166,13 @@ PROBE_JS = r"""
         const size = typeof data === "string"
           ? data.length
           : (data && (data.byteLength || data.size)) || 0;
+        const binaryBytes = data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : (ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null);
+        const binaryBase64 = binaryBytes
+          ? btoa(Array.from(binaryBytes, x => String.fromCharCode(x)).join(""))
+          : null;
+        const binaryHash = binaryBytes ? await sha256(binaryBytes) : null;
         push({
           api: "websocket",
           phase: "send",
@@ -174,7 +181,9 @@ PROBE_JS = r"""
           relevant,
           data_type: typeof data === "string" ? "text" : Object.prototype.toString.call(data),
           body_size: size,
-          body_preview: relevant && bodyText != null ? bodyText.slice(0, MAX_PREVIEW) : null
+          body_sha256: binaryHash || (typeof data === "string" ? await sha256(data) : null),
+          body_preview: relevant && bodyText != null ? bodyText.slice(0, MAX_PREVIEW) : null,
+          body_base64: binaryBase64
         });
       } catch (_) {}
       return originalSend.apply(this, arguments);
