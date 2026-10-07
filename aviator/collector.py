@@ -1077,8 +1077,7 @@ class Collector:
                             "candidates": probe,
                         })
                     # Read-only diagnostic for the control that exposes last-round information.
-                    # This does not click anything; it records only visible UI metadata so the
-                    # collector can identify the exact control that triggered roundFairnessResponse.
+                    # This does not click anything; it records only visible UI metadata.
                     try:
                         round_info_probe = await frame.evaluate("""() => {
                             const clean = (v) => String(v || "").replace(/\\s+/g, " ").trim().slice(0, 180);
@@ -1119,12 +1118,6 @@ class Collector:
                             "error": str(round_info_exc),
                         })
 
-                    except Exception as probe_exc:
-                        self.netlog.write({
-                            "kind": "fairness_dom_probe_error",
-                            "frame_url": safe_url(frame.url),
-                            "error": str(probe_exc),
-                        })
                     self.netlog.write({"kind": "fairness_menu_not_found"})
                 except Exception as exc:
                     self.netlog.write({"kind": "fairness_click_error", "error": str(exc)})
