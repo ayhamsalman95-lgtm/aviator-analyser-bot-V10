@@ -64,13 +64,13 @@ class ModeDefaultsTests(unittest.TestCase):
         self.check_cfg(MINIMAL, 5_000_000, 3, False)
 
     def test_shipped_config_follows_the_selected_mode(self):
-        research = load_config()
-        self.assertEqual((research.collection_mode, research["network_log_max_bytes"],
-                          research["network_log_backups"], research["log_text_frames"]),
-                         (RESEARCH, 5_000_000, 3, False))
-        forensic = load_config(overrides={"collection_mode": "forensic"})
-        self.assertEqual((forensic["network_log_max_bytes"], forensic["network_log_backups"],
-                          forensic["log_text_frames"]), (20_000_000, 5, True))
+        forensic = load_config()
+        self.assertEqual((forensic.collection_mode, forensic["network_log_max_bytes"],
+                          forensic["network_log_backups"], forensic["log_text_frames"]),
+                         (FORENSIC, 20_000_000, 5, True))
+        research = load_config(overrides={"collection_mode": "research"})
+        self.assertEqual((research["network_log_max_bytes"], research["network_log_backups"],
+                          research["log_text_frames"]), (5_000_000, 3, False))
         self.assertEqual(forensic["game_id"], 52358)
 
     def test_explicit_values_still_win(self):
