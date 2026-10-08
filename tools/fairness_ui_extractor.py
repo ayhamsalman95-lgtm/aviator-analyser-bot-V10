@@ -213,17 +213,52 @@ async def main() -> None:
                 await goto_tolerant(page, cfg["game_url"], "game")
             print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
-            host = cfg["aviator_frame_host"]
+            # 1xBet currently embeds Aviator at launch.spribegaming.com.
+            # Do not rely on a stale hard-coded frame host; identify the live
+            # visible game iframe and ignore unrelated/stale frames.
+            selector = "iframe.casino-games-stand-game-frame__iframe"
+
+            async def find_live_game_frames():
+                locator = page.locator(selector)
+                candidates = []
+                for i in range(await locator.count()):
+                    try:
+                        iframe = locator.nth(i)
+                        if not await iframe.is_visible():
+                            continue
+                        frame = await iframe.content_frame()
+                        if frame is None:
+                            continue
+                        text = ""
+                        try:
+                            text = (await frame.locator("body").inner_text(timeout=1500))[:4000]
+                        except Exception:
+                            pass
+                        low = text.lower()
+                        if "session ended" in low and "opened in another browser window" in low:
+                            continue
+                        score = 0
+                        if "spribegaming.com" in (frame.url or "").lower():
+                            score += 3
+                        for needle in ("provably fair", "all bets", "previous", "top", "bets", "total win", "powered by"):
+                            if needle in low:
+                                score += 1
+                        candidates.append((score, frame))
+                    except Exception:
+                        continue
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                return [frame for _, frame in candidates]
+
             deadline = time.monotonic() + 120
             last_report = 0.0
             inspected = set()
 
             while time.monotonic() < deadline:
                 frames = list(page.frames)
-                host_frames = [f for f in frames if host in (f.url or "")]
+                host_frames = await find_live_game_frames()
                 now = time.monotonic()
                 if now - last_report >= 10:
-                    print(f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} page_url={page.url}", flush=True)
+                    print(f"[SCAN] frames={len(frames)} live_game_frames={len(host_frames)} page_url={page.url}", flush=True)
                     for f in frames:
                         print(f"[FRAME] {f.url}", flush=True)
                     last_report = now
@@ -278,13 +313,13 @@ async def main() -> None:
 
             print("[TIMEOUT] No Fairness UI found within 120 seconds.", flush=True)
             print(f"[DIAG] page title={await page.title()} url={page.url}", flush=True)
-            for frame in list(page.frames):
-                if host in (frame.url or ""):
-                    print("[TIMEOUT] Final target-frame diagnostic:", flush=True)
-                    await inspect_frame(frame)
+            for frame in await find_live_game_frames():
+                print("[TIMEOUT] Final live-game-frame diagnostic:", flush=True)
+                await inspect_frame(frame)
         finally:
-            await context.close()
-            await browser.close()
+            # The browser was attached through CDP and is owned by noVNC/Chrome.
+            # Never close the existing browser session from the extractor.
+            pass
 
 
 if __name__ == "__main__":
