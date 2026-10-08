@@ -4,7 +4,6 @@ import asyncio
 import json
 import re
 import time
-from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -13,7 +12,7 @@ from aviator.config import load_config
 
 FAIRNESS_RE = re.compile(r"provably\s*fair\s*settings", re.I)
 
-EXTRACT_JS = """() => {
+EXTRACT_JS = r"""() => {
   const clean = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
   const visible = (el) => {
     const r = el.getBoundingClientRect();
@@ -53,7 +52,7 @@ EXTRACT_JS = """() => {
     )),
     visible_text: clean(document.body.innerText).slice(0, 20000)
   };
-}""";
+}"""
 
 
 async def main() -> None:
@@ -64,6 +63,7 @@ async def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
+        print("[START] Launching headless Chrome...", flush=True)
         context = await p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             channel="chrome",
@@ -73,64 +73,120 @@ async def main() -> None:
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(cfg["site_home_url"], wait_until="domcontentloaded", timeout=60000)
+            print("[NAV] Opening site home...", flush=True)
+            response = await page.goto(
+                cfg["site_home_url"],
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            print(
+                f"[NAV] Home loaded status={response.status if response else 'none'} "
+                f"title={await page.title()} url={page.url}",
+                flush=True,
+            )
 
             if await page.locator("input[type='password']").count():
-                print("[LOGIN] Log in manually in Chrome; waiting up to 180s.", flush=True)
+                print(
+                    "[LOGIN] Login page detected. Headless mode cannot accept manual input; "
+                    "waiting for an existing authenticated session.",
+                    flush=True,
+                )
                 deadline = time.monotonic() + float(cfg["login_wait_s"])
                 while time.monotonic() < deadline:
                     await asyncio.sleep(2)
                     if await page.locator("input[type='password']").count() == 0:
+                        print("[LOGIN] Password form disappeared.", flush=True)
                         break
+                else:
+                    print("[LOGIN] No authenticated session detected.", flush=True)
+                    return
 
-            await page.goto(cfg["game_url"], wait_until="domcontentloaded", timeout=60000)
+            print("[NAV] Opening game...", flush=True)
+            response = await page.goto(
+                cfg["game_url"],
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            print(
+                f"[NAV] Game loaded status={response.status if response else 'none'} "
+                f"title={await page.title()} url={page.url}",
+                flush=True,
+            )
+
             host = cfg["aviator_frame_host"]
+            deadline = time.monotonic() + 90
+            last_report = 0.0
 
-            while True:
-                found = False
-                for frame in list(page.frames):
-                    if host not in (frame.url or ""):
-                        continue
+            while time.monotonic() < deadline:
+                frames = list(page.frames)
+                host_frames = [f for f in frames if host in (f.url or "")]
+                now = time.monotonic()
+                if now - last_report >= 10:
+                    print(
+                        f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} "
+                        f"page_url={page.url}",
+                        flush=True,
+                    )
+                    for f in frames:
+                        print(f"[FRAME] {f.url}", flush=True)
+                    last_report = now
+
+                for frame in host_frames:
                     loc = frame.get_by_text(FAIRNESS_RE)
                     for i in range(await loc.count()):
                         item = loc.nth(i)
                         if await item.is_visible():
+                            print("[FAIRNESS] Found visible settings text; clicking.", flush=True)
                             await item.click(timeout=2500)
-                            found = True
-                            break
-                    if found:
-                        break
+                            snapshot = await frame.evaluate(EXTRACT_JS)
+                            record = {
+                                "kind": "fairness_ui_evidence",
+                                "schema_version": 1,
+                                "captured_at": time.time(),
+                                "frame_url": frame.url,
+                                "snapshot": snapshot,
+                            }
+                            with out.open("a", encoding="utf-8") as fh:
+                                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                            print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
+                            return
 
                     icons = frame.locator("div.dropdown-toggle.button > .button-icon")
                     for i in range(await icons.count()):
                         icon = icons.nth(i)
                         if await icon.is_visible():
+                            print("[MENU] Found visible menu icon; clicking.", flush=True)
                             await icon.locator("..").click(timeout=2500)
                             await frame.wait_for_timeout(400)
                             loc = frame.get_by_text(FAIRNESS_RE)
                             for j in range(await loc.count()):
                                 item = loc.nth(j)
                                 if await item.is_visible():
+                                    print("[FAIRNESS] Found settings after menu click.", flush=True)
                                     await item.click(timeout=2500)
-                                    found = True
-                                    break
-                        if found:
-                            break
-                    if found:
-                        snapshot = await frame.evaluate(EXTRACT_JS)
-                        record = {
-                            "kind": "fairness_ui_evidence",
-                            "schema_version": 1,
-                            "captured_at": time.time(),
-                            "frame_url": frame.url,
-                            "snapshot": snapshot,
-                        }
-                        with out.open("a", encoding="utf-8") as fh:
-                            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-                        print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
-                        return
+                                    snapshot = await frame.evaluate(EXTRACT_JS)
+                                    record = {
+                                        "kind": "fairness_ui_evidence",
+                                        "schema_version": 1,
+                                        "captured_at": time.time(),
+                                        "frame_url": frame.url,
+                                        "snapshot": snapshot,
+                                    }
+                                    with out.open("a", encoding="utf-8") as fh:
+                                        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                                    print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
+                                    return
 
                 await asyncio.sleep(1)
+
+            print("[TIMEOUT] No Fairness UI found within 90 seconds.", flush=True)
+            print(f"[DIAG] page title={await page.title()} url={page.url}", flush=True)
+            print("[DIAG] Visible body text:", flush=True)
+            try:
+                text = await page.locator("body").inner_text(timeout=5000)
+                print(" ".join(text.split())[:6000], flush=True)
+            except Exception as exc:
+                print(f"[DIAG] Could not read body text: {exc}", flush=True)
         finally:
             await context.close()
 
