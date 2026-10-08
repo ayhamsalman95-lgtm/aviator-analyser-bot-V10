@@ -57,26 +57,90 @@ EXTRACT_JS = r"""() => {
 }"""
 
 
-async def capture_fairness(frame, out) -> bool:
-    loc = frame.get_by_text(FAIRNESS_RE)
-    for i in range(await loc.count()):
-        item = loc.nth(i)
-        if await item.is_visible():
-            print("[FAIRNESS] Found visible settings text; clicking.", flush=True)
-            await item.click(timeout=2500)
-            snapshot = await frame.evaluate(EXTRACT_JS)
-            record = {
-                "kind": "fairness_ui_evidence",
-                "schema_version": 1,
-                "captured_at": time.time(),
-                "frame_url": frame.url,
-                "snapshot": snapshot,
-            }
-            with out.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
-            return True
-    return False
+async def capture_fairness_settings(frame, out) -> bool:
+    """Open the top-right game menu, enter Provably Fair Settings, save visible evidence, close the dialog."""
+    menu = frame.locator(".user-wrapper .dropdown-toggle.user").first
+    try:
+        if not await menu.is_visible():
+            print("[FAIRNESS] Top-right menu control is not visible.", flush=True)
+            return False
+        await menu.click(timeout=4000)
+        await frame.wait_for_timeout(500)
+    except Exception as exc:
+        print(f"[FAIRNESS] Could not open top-right menu: {exc}", flush=True)
+        return False
+
+    settings = frame.get_by_text(FAIRNESS_RE)
+    clicked = False
+    for i in range(await settings.count()):
+        item = settings.nth(i)
+        try:
+            if await item.is_visible():
+                await item.click(timeout=4000)
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        print("[FAIRNESS] Menu opened, but 'Provably Fair Settings' was not clickable.", flush=True)
+        return False
+
+    await frame.wait_for_timeout(700)
+    snapshot = await frame.evaluate(EXTRACT_JS)
+    text = snapshot.get("visible_text", "")
+    candidates = snapshot.get("candidates", [])
+    if not candidates and not re.search(r"server.?seed|client.?seed|sha.?256|provably|nonce|hash", text, re.I):
+        print("[FAIRNESS] Settings opened but no recognizable fairness fields were visible.", flush=True)
+        print("[FAIRNESS] Visible text: " + text[:3000], flush=True)
+        return False
+
+    record = {
+        "kind": "fairness_ui_evidence",
+        "schema_version": 2,
+        "captured_at": time.time(),
+        "frame_url": frame.url,
+        "evidence_scope": "visible Provably Fair Settings dialog",
+        "snapshot": snapshot,
+    }
+    with out.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    print("[FAIRNESS] Settings evidence captured -> " + str(out), flush=True)
+    print("[FAIRNESS] Snapshot text: " + json.dumps(text[:5000], ensure_ascii=False), flush=True)
+
+    close_selectors = [
+        "[role='dialog'] button[aria-label*='close' i]",
+        "[aria-modal='true'] button[aria-label*='close' i]",
+        "[class*='modal' i] button[aria-label*='close' i]",
+        "[class*='popup' i] button[aria-label*='close' i]",
+        "[role='dialog'] button.close",
+        "[aria-modal='true'] button.close",
+        "[class*='modal' i] button.close",
+        "[class*='popup' i] button.close",
+        "[role='dialog'] [class*='close' i]",
+        "[aria-modal='true'] [class*='close' i]",
+        "[class*='modal' i] [class*='close' i]",
+        "[class*='popup' i] [class*='close' i]",
+    ]
+    closed = False
+    for selector in close_selectors:
+        loc = frame.locator(selector)
+        for i in range(await loc.count()):
+            item = loc.nth(i)
+            try:
+                if await item.is_visible():
+                    await item.click(timeout=2000)
+                    await frame.wait_for_timeout(300)
+                    closed = True
+                    break
+            except Exception:
+                continue
+        if closed:
+            break
+    if closed:
+        print("[FAIRNESS] Closed Provably Fair Settings dialog.", flush=True)
+    else:
+        print("[FAIRNESS] Evidence saved; close button not identified safely. Please close the dialog manually.", flush=True)
+    return True
 
 
 async def inspect_frame(frame) -> None:
@@ -250,65 +314,12 @@ async def main() -> None:
                 raise RuntimeError("Standalone Aviator tab was not detected within 120 seconds")
 
             print(f"[AVIATOR-2] Standalone Aviator TAB detected: {game_page.url}", flush=True)
-            deadline = time.monotonic() + 120
-            last_report = 0.0
-            inspected = False
-
-            while time.monotonic() < deadline:
-                target = game_page.main_frame
-                now = time.monotonic()
-                if now - last_report >= 10:
-                    print(f"[SCAN] Aviator tab url={game_page.url}", flush=True)
-                    last_report = now
-
-                if target.url:
-                    if await capture_fairness(target, out):
-                        return
-                    if not inspected:
-                        inspected = True
-                        print("[FRAME-DIAG] Inspecting standalone Aviator tab once.", flush=True)
-                        await inspect_frame(target)
-
-                    for candidate_selector in [
-                        "div.dropdown-toggle.button",
-                        "[class*='dropdown-toggle']",
-                        "[aria-label*='menu' i]",
-                        "[title*='menu' i]",
-                        "button"
-                    ]:
-                        loc = target.locator(candidate_selector)
-                        for i in range(min(await loc.count(), 20)):
-                            item = loc.nth(i)
-                            try:
-                                if not await item.is_visible():
-                                    continue
-                                txt = (await item.inner_text()).strip()
-                                aria = await item.get_attribute("aria-label")
-                                title = await item.get_attribute("title")
-                                cls = await item.get_attribute("class") or ""
-                                if candidate_selector == "button" and not (
-                                    "menu" in f"{txt} {aria} {title} {cls}".lower()
-                                    or "dropdown" in cls.lower()
-                                ):
-                                    continue
-                                print(f"[MENU] Clicking candidate selector={candidate_selector} text={txt!r}", flush=True)
-                                await item.click(timeout=2500)
-                                await target.wait_for_timeout(1000)
-                                break
-                            except Exception:
-                                continue
-                        else:
-                            continue
-                        break
-
-                    if await capture_fairness(target, out):
-                        return
-
-                await asyncio.sleep(1)
-
-            print("[TIMEOUT] No Fairness UI found within 120 seconds.", flush=True)
-            print(f"[DIAG] Aviator tab title={await game_page.title()} url={game_page.url}", flush=True)
-            await inspect_frame(game_page.main_frame)
+            print("[FAIRNESS] Opening Provably Fair Settings once to capture the pre-round values.", flush=True)
+            ok = await capture_fairness_settings(game_page.main_frame, out)
+            if not ok:
+                print("[FAIRNESS] Could not capture settings automatically; leaving the tab open for diagnostics.", flush=True)
+                await inspect_frame(game_page.main_frame)
+            print("[NEXT] The settings dialog has been handled once. Send a screenshot of the round-by-round control you want monitored before we automate repeated captures.", flush=True)
         finally:
             # The browser was attached through CDP and is owned by noVNC/Chrome.
             # Never close the existing browser session from the extractor.
