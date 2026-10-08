@@ -8,6 +8,14 @@ Collect the complete browser-visible WebSocket evidence for the configured Aviat
 
 `config.json` uses `"collection_mode": "forensic"`. In this mode the collector does not apply the research-mode relevance filter to network records. Restart the collector after changing the mode; an already-running process keeps its in-memory policy.
 
+For the two-tab direct-launch workflow, set `AVIATOR_GAME_URL` locally to a fresh HTTPS launch URL on `launch.spribegaming.com`. Never put that credential-bearing URL in `config.json`, source control, logs, or shared diagnostics. The collector opens the configured operator site, opens Aviator in its operator tab, waits 20 seconds, then creates a separate capture tab. `AVIATOR_LAUNCH_DELAY_SECONDS` optionally changes the delay (allowed range 0–300 seconds; default 20).
+
+Example shape only (not a real URL or credential):
+
+`AVIATOR_GAME_URL='https://launch.spribegaming.com/aviator?...' python collector.py`
+
+The second tab's request/response/frame/WebSocket listeners are attached before navigating it to the direct URL. The primary forensic WebSocket stream is scoped to this second tab. If `AVIATOR_GAME_URL` is absent, the collector retains a backward-compatible mode that captures the operator game tab instead.
+
 Default rotation settings are currently 20,000,000 bytes per network log file with 5 backups. This is a bounded rolling log, not an unlimited archive. Each rotation writes a `network_log_rotation` record; when an old backup is discarded, the record marks `evidence_loss: true`.
 
 ## Evidence layout
@@ -51,8 +59,8 @@ Forensic payloads may contain session-specific or account-related data even when
 
 ## Run checklist
 
-1. Confirm that only the intended, already-open Aviator session is active; do not launch a duplicate game session for the same account.
-2. Start the collector and verify that it reports the expected Spribe WebSocket connection.
+1. Confirm that the configured operator account is already authenticated, and provide a fresh local-only direct Spribe launch URL when using the two-tab workflow.
+2. Start the collector. Verify the operator tab opens first, then the configured delay elapses, then the separate direct-Spribe capture tab opens and reports observed WebSocket events.
 3. Confirm that `ws_open` and subsequent frame records appear in `logs/network/game_network.jsonl`.
 4. Confirm that both incoming and outgoing events are represented when they occur, and that undecodable frames/errors are retained.
 5. Watch disk usage and rotation markers during long captures. Copy rotated logs to a separate archive before the bounded backup window overwrites them.
