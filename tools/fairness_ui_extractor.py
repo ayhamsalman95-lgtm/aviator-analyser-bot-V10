@@ -67,7 +67,7 @@ async def main() -> None:
         context = await p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             channel="chrome",
-            headless=False,
+            headless=True,
             viewport={"width": 1440, "height": 900},
             args=["--disable-notifications"],
         )
