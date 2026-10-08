@@ -55,6 +55,28 @@ EXTRACT_JS = r"""() => {
 }"""
 
 
+async def capture_fairness(frame, out) -> bool:
+    loc = frame.get_by_text(FAIRNESS_RE)
+    for i in range(await loc.count()):
+        item = loc.nth(i)
+        if await item.is_visible():
+            print("[FAIRNESS] Found visible settings text; clicking.", flush=True)
+            await item.click(timeout=2500)
+            snapshot = await frame.evaluate(EXTRACT_JS)
+            record = {
+                "kind": "fairness_ui_evidence",
+                "schema_version": 1,
+                "captured_at": time.time(),
+                "frame_url": frame.url,
+                "snapshot": snapshot,
+            }
+            with out.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
+            return True
+    return False
+
+
 async def main() -> None:
     cfg = load_config()
     profile = cfg.path("chrome_profile_dir")
@@ -132,50 +154,20 @@ async def main() -> None:
                     last_report = now
 
                 for frame in host_frames:
-                    loc = frame.get_by_text(FAIRNESS_RE)
-                    for i in range(await loc.count()):
-                        item = loc.nth(i)
-                        if await item.is_visible():
-                            print("[FAIRNESS] Found visible settings text; clicking.", flush=True)
-                            await item.click(timeout=2500)
-                            snapshot = await frame.evaluate(EXTRACT_JS)
-                            record = {
-                                "kind": "fairness_ui_evidence",
-                                "schema_version": 1,
-                                "captured_at": time.time(),
-                                "frame_url": frame.url,
-                                "snapshot": snapshot,
-                            }
-                            with out.open("a", encoding="utf-8") as fh:
-                                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-                            print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
-                            return
+                    if await capture_fairness(frame, out):
+                        return
 
                     icons = frame.locator("div.dropdown-toggle.button > .button-icon")
                     for i in range(await icons.count()):
                         icon = icons.nth(i)
                         if await icon.is_visible():
-                            print("[MENU] Found visible menu icon; clicking.", flush=True)
+                            print("[MENU] Found visible menu icon; clicking once.", flush=True)
                             await icon.locator("..").click(timeout=2500)
-                            await frame.wait_for_timeout(400)
-                            loc = frame.get_by_text(FAIRNESS_RE)
-                            for j in range(await loc.count()):
-                                item = loc.nth(j)
-                                if await item.is_visible():
-                                    print("[FAIRNESS] Found settings after menu click.", flush=True)
-                                    await item.click(timeout=2500)
-                                    snapshot = await frame.evaluate(EXTRACT_JS)
-                                    record = {
-                                        "kind": "fairness_ui_evidence",
-                                        "schema_version": 1,
-                                        "captured_at": time.time(),
-                                        "frame_url": frame.url,
-                                        "snapshot": snapshot,
-                                    }
-                                    with out.open("a", encoding="utf-8") as fh:
-                                        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-                                    print("[FAIRNESS] UI evidence captured -> " + str(out), flush=True)
-                                    return
+                            await frame.wait_for_timeout(700)
+                            break
+
+                    if await capture_fairness(frame, out):
+                        return
 
                 await asyncio.sleep(1)
 
