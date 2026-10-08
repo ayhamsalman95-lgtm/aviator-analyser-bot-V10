@@ -1,4 +1,4 @@
-"""Regression checks for direct-launch validation and the two-tab capture ordering."""
+"""Regression checks for direct-launch validation and separate-window capture ordering."""
 import inspect
 import unittest
 
@@ -47,21 +47,22 @@ class LaunchValidationTests(unittest.TestCase):
         self.assertIn("redacted", diagnostic.lower())
 
 
-class TwoTabWorkflowRegressionTests(unittest.TestCase):
-    def test_workflow_order_is_operator_then_delay_then_capture_tab(self):
+class SeparateWindowWorkflowRegressionTests(unittest.TestCase):
+    def test_workflow_order_is_operator_then_delay_then_new_window(self):
         source = inspect.getsource(Collector.run_session)
         steps = [
             "operator_page.goto(site_home_url",
             "operator_page.goto(operator_url",
             "await asyncio.sleep(launch_delay)",
-            "capture_page = await context.new_page()",
+            'async with context.expect_page() as page_info:',
+            '"Target.createTarget"',
             "attach(capture_page)",
             "await capture_page.goto(launch_url",
         ]
         positions = [source.index(step) for step in steps]
         self.assertEqual(positions, sorted(positions))
 
-    def test_direct_capture_tab_has_its_listeners_before_navigation(self):
+    def test_direct_capture_window_has_its_listeners_before_navigation(self):
         source = inspect.getsource(Collector.run_session)
         self.assertLess(source.index("attach(capture_page)"),
                         source.index("await capture_page.goto(launch_url"))
