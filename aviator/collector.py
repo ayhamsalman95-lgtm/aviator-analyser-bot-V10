@@ -627,6 +627,79 @@ class Collector:
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+    # --------------------------------------------------------- fairness extractor
+    async def extract_fairness_ui(self, frame, trigger_round_id=None) -> None:
+        """Capture visible Provably Fair UI evidence after the settings panel opens."""
+        try:
+            snapshot = await frame.evaluate("""() => {
+                const clean = (v) => String(v ?? "").replace(/\\s+/g, " ").trim();
+                const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const cs = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 &&
+                           cs.display !== "none" && cs.visibility !== "hidden" &&
+                           parseFloat(cs.opacity || "1") > 0.05;
+                };
+                const textOf = (el) => clean(el.innerText || el.textContent || "");
+                const roots = Array.from(document.querySelectorAll(
+                    "[role='dialog'],[aria-modal='true'],[class*='modal' i]," +
+                    "[class*='popup' i],[class*='dialog' i],[class*='fair' i]"
+                )).filter(visible);
+                const all = roots.length ? roots : [document.body];
+                const candidates = all.map((el) => {
+                    const r = el.getBoundingClientRect();
+                    const fields = Array.from(el.querySelectorAll(
+                        "input,textarea,[contenteditable='true'],[data-testid],[aria-label],[title]"
+                    )).filter(visible).slice(0, 200).map((x) => ({
+                        tag: x.tagName.toLowerCase(),
+                        text: textOf(x),
+                        value: clean(x.value),
+                        aria: clean(x.getAttribute("aria-label")),
+                        title: clean(x.getAttribute("title")),
+                        name: clean(x.getAttribute("name")),
+                        testid: clean(x.getAttribute("data-testid")),
+                        type: clean(x.getAttribute("type"))
+                    }));
+                    return {
+                        tag: el.tagName.toLowerCase(),
+                        id: clean(el.id),
+                        cls: clean(el.className),
+                        text: textOf(el).slice(0, 12000),
+                        x: Math.round(r.x), y: Math.round(r.y),
+                        w: Math.round(r.width), h: Math.round(r.height),
+                        fields
+                    };
+                }).filter(x => /provably|fair|server.?seed|player.?seed|client.?seed|sha.?256|sha.?512|round.?hash/i.test(
+                    x.text + " " + x.cls + " " + x.id
+                ));
+                return {
+                    url: location.href,
+                    title: clean(document.title),
+                    candidates,
+                    visible_text: clean(document.body.innerText).slice(0, 16000)
+                };
+            }""")
+            self.netlog.write({
+                "kind": "fairness_ui_snapshot",
+                "schema_version": 3,
+                "session_id": self.session_id,
+                "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id("fairness-ui"),
+                "frame_url": safe_url(frame.url),
+                "trigger_round_id": trigger_round_id,
+                "snapshot": snapshot,
+            })
+        except Exception as exc:
+            self.netlog.write({
+                "kind": "fairness_ui_extract_error",
+                "session_id": self.session_id,
+                "collector_run_id": self.collector_run_id,
+                "event_id": self._next_event_id("fairness-ui-error"),
+                "frame_url": safe_url(frame.url),
+                "trigger_round_id": trigger_round_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
     # ------------------------------------------------------------- fairness
     async def maybe_open_fairness(self, context) -> None:
         """Disabled by default. When enabled: rate limited, event-driven, no control dumps."""
