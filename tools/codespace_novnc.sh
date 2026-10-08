@@ -17,6 +17,7 @@ cleanup() {
   kill "$XVFB_PID" 2>/dev/null || true
   [[ -n "${VNC_PID:-}" ]] && kill "$VNC_PID" 2>/dev/null || true
   [[ -n "${WS_PID:-}" ]] && kill "$WS_PID" 2>/dev/null || true
+  [[ -n "${CHROME_PID:-}" ]] && kill "$CHROME_PID" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 
@@ -57,6 +58,8 @@ google-chrome \
   --disable-dev-shm-usage \
   --disable-notifications \
   --window-size=1440,900 \
+  --remote-debugging-port=9222 \
+  --remote-debugging-address=127.0.0.1 \
   "https://1xlite-130003.top/ar/" >/tmp/aviator-chrome.log 2>&1 &
 CHROME_PID=$!
 
@@ -74,8 +77,8 @@ echo "[NOVNC] Xvfb PID=$XVFB_PID"
 echo "[NOVNC] x11vnc PID=$VNC_PID"
 echo "[NOVNC] noVNC PID=$WS_PID"
 echo "[NOVNC] Chrome PID=$CHROME_PID"
-echo "[NOVNC] Open forwarded port 6080 in the Codespace Ports panel."
-echo "[NOVNC] Then open /vnc.html in the forwarded 6080 URL."
+echo "[NOVNC] CDP port=9222"
+echo "[NOVNC] Open forwarded port 6080 in the Codespaces Ports panel."
 echo "[NOVNC] Do NOT use port 5900 in the browser."
 echo "[NOVNC] Do NOT paste your password into the terminal."
 echo "[NOVNC] Keep this terminal running while using the browser."
@@ -109,6 +112,8 @@ while true; do
       --disable-dev-shm-usage \
       --disable-notifications \
       --window-size=1440,900 \
+      --remote-debugging-port=9222 \
+      --remote-debugging-address=127.0.0.1 \
       "https://1xlite-130003.top/ar/" >/tmp/aviator-chrome.log 2>&1 &
     CHROME_PID=$!
   fi
