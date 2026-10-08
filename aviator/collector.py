@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import os
 import re
 import time
 import uuid
@@ -1297,9 +1298,21 @@ class Collector:
         profile = self.cfg.path("chrome_profile_dir")
         profile.mkdir(parents=True, exist_ok=True)
         async with async_playwright() as p:
-            context = await p.chromium.launch_persistent_context(
-                user_data_dir=str(profile), channel="chrome", headless=False,
-                viewport={"width": 1440, "height": 900}, args=["--disable-notifications"])
+            cdp_url = os.environ.get("AVIATOR_CDP_URL")
+            owns_context = True
+            if cdp_url:
+                print(f"[CDP] Connecting to existing Chrome: {cdp_url}", flush=True)
+                browser = await p.chromium.connect_over_cdp(cdp_url)
+                contexts = browser.contexts
+                if not contexts:
+                    raise RuntimeError("Connected to Chrome, but no browser context is available")
+                context = contexts[0]
+                owns_context = False
+            else:
+                print("[CHROME] Launching dedicated Chrome session", flush=True)
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile), channel="chrome", headless=False,
+                    viewport={"width": 1440, "height": 900}, args=["--disable-notifications"])
             try:
                 await context.add_init_script(INJECT_JS)
 
@@ -1476,10 +1489,11 @@ class Collector:
                     self.store.set_status("collecting", "يجمع النتائج من Aviator game frame", **self.tracker.snapshot())
                     await asyncio.sleep(0.5)
             finally:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
+                if owns_context:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
 
     async def supervise(self) -> None:
         backoff = [float(x) for x in self.cfg["reconnect_backoff_s"]] or [10.0]
