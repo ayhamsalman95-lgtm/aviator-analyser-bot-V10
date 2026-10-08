@@ -17,7 +17,7 @@ cleanup() {
   [[ -n "${VNC_PID:-}" ]] && kill "$VNC_PID" 2>/dev/null || true
   [[ -n "${WS_PID:-}" ]] && kill "$WS_PID" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup INT TERM
 
 sleep 2
 
