@@ -14,7 +14,7 @@ from aviator.config import load_config
 FAIRNESS_RE = re.compile(r"provably\s*fair\s*settings", re.I)
 
 EXTRACT_JS = """() => {
-  const clean = (v) => String(v ?? "").replace(/\\s+/g, " ").trim();
+  const clean = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
@@ -53,14 +53,14 @@ EXTRACT_JS = """() => {
     )),
     visible_text: clean(document.body.innerText).slice(0, 20000)
   };
-}"""
+}""";
 
 
 async def main() -> None:
     cfg = load_config()
     profile = cfg.path("chrome_profile_dir")
     profile.mkdir(parents=True, exist_ok=True)
-    out = cfg.path("logs") / "network" / "fairness_ui.jsonl"
+    out = cfg.path("logs_dir") / "network" / "fairness_ui.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
