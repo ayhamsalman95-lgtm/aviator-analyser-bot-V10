@@ -178,36 +178,24 @@ async def goto_tolerant(page, url: str, label: str):
 
 async def main() -> None:
     cfg = load_config()
-    profile = cfg.path("chrome_profile_dir")
-    profile.mkdir(parents=True, exist_ok=True)
     out = cfg.path("logs_dir") / "network" / "fairness_ui.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    display = os.environ.get("DISPLAY", ":99")
-    xvfb = None
-    if not os.environ.get("DISPLAY"):
-        print(f"[XVFB] Starting virtual display {display}...", flush=True)
-        xvfb = subprocess.Popen(
-            ["Xvfb", display, "-screen", "0", "1440x900x24", "-ac", "-noreset"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        os.environ["DISPLAY"] = display
-        await asyncio.sleep(2)
-
     async with async_playwright() as p:
-        print("[START] Launching headed Chrome...", flush=True)
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile),
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1440, "height": 900},
-            args=["--disable-notifications", "--disable-dev-shm-usage"],
-        )
+        cdp_url = os.environ.get("AVIATOR_CDP_URL", "http://127.0.0.1:9222")
+        print(f"[START] Connecting to existing Chrome via CDP {cdp_url}...", flush=True)
+        browser = await p.chromium.connect_over_cdp(cdp_url)
+        contexts = browser.contexts
+        if not contexts:
+            raise RuntimeError("Connected to Chrome, but no browser context is available.")
+        context = contexts[0]
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            await goto_tolerant(page, cfg["site_home_url"], "site home")
-            print(f"[NAV] Home current title={await page.title()} url={page.url}", flush=True)
+            pages = context.pages
+            page = pages[0] if pages else await context.new_page()
+            print(f"[CDP] Attached pages={len(pages)} current_url={page.url}", flush=True)
+
+            if not page.url or page.url == "about:blank":
+                await goto_tolerant(page, cfg["site_home_url"], "site home")
 
             if await page.locator("input[type='password']").count():
                 print("[LOGIN] Login page detected. Waiting for existing authenticated session.", flush=True)
@@ -221,7 +209,8 @@ async def main() -> None:
                     print("[LOGIN] No authenticated session detected.", flush=True)
                     return
 
-            await goto_tolerant(page, cfg["game_url"], "game")
+            if "casino-search?game=52358" not in page.url:
+                await goto_tolerant(page, cfg["game_url"], "game")
             print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
             host = cfg["aviator_frame_host"]
@@ -295,12 +284,7 @@ async def main() -> None:
                     await inspect_frame(frame)
         finally:
             await context.close()
-            if xvfb:
-                xvfb.terminate()
-                try:
-                    xvfb.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    xvfb.kill()
+            await browser.close()
 
 
 if __name__ == "__main__":
