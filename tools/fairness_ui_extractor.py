@@ -213,50 +213,24 @@ async def main() -> None:
                 await goto_tolerant(page, cfg["game_url"], "game")
             print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
-            # 1xBet currently embeds Aviator at launch.spribegaming.com.
-            # Do not rely on a stale hard-coded frame host; identify the live
-            # visible game iframe and ignore unrelated/stale frames.
+            # Open the first Aviator iframe in the normal 1xBet tab.
+            # Leave it open for 10 seconds, then open the exact same live
+            # iframe URL in a new tab and collect from that second tab.
+            await asyncio.sleep(10)
             selector = "iframe.casino-games-stand-game-frame__iframe"
+            iframe = page.locator(selector).nth(0)
+            await iframe.wait_for(state="visible", timeout=30000)
+            src = await iframe.get_attribute("src")
+            if not src or "launch.spribegaming.com/aviator" not in src:
+                raise RuntimeError(f"Unexpected Aviator iframe src: {src!r}")
+            print(f"[AVIATOR-1] First game iframe URL: {src}", flush=True)
+            print("[AVIATOR-1] Leaving first game window open for 10 seconds.", flush=True)
+            await asyncio.sleep(10)
 
-            async def find_live_game_frames():
-                locator = page.locator(selector)
-                candidates = []
-                for i in range(await locator.count()):
-                    try:
-                        iframe = locator.nth(i)
-                        if not await iframe.is_visible():
-                            continue
-                        frame = iframe.content_frame
-                        if frame is None:
-                            # The iframe element can exist a little before
-                            # Playwright exposes its child frame. Give the
-                            # live game a short grace period instead of dropping it.
-                            try:
-                                await page.wait_for_timeout(500)
-                                frame = iframe.content_frame
-                            except Exception:
-                                frame = None
-                        if frame is None:
-                            continue
-                        text = ""
-                        try:
-                            text = (await frame.locator("body").inner_text(timeout=1500))[:4000]
-                        except Exception:
-                            pass
-                        low = text.lower()
-                        if "session ended" in low and "opened in another browser window" in low:
-                            continue
-                        score = 0
-                        if "spribegaming.com" in (frame.url or "").lower():
-                            score += 3
-                        for needle in ("provably fair", "all bets", "previous", "top", "bets", "total win", "powered by"):
-                            if needle in low:
-                                score += 1
-                        candidates.append((score, frame))
-                    except Exception:
-                        continue
-                candidates.sort(key=lambda item: item[0], reverse=True)
-                return [frame for _, frame in candidates]
+            game_page = await context.new_page()
+            print("[AVIATOR-2] Opening second game tab with the exact iframe URL.", flush=True)
+            await goto_tolerant(game_page, src, "second Aviator game tab")
+            print(f"[AVIATOR-2] Current URL={game_page.url}", flush=True)
 
             deadline = time.monotonic() + 120
             last_report = 0.0
@@ -321,10 +295,8 @@ async def main() -> None:
                 await asyncio.sleep(1)
 
             print("[TIMEOUT] No Fairness UI found within 120 seconds.", flush=True)
-            print(f"[DIAG] page title={await page.title()} url={page.url}", flush=True)
-            for frame in await find_live_game_frames():
-                print("[TIMEOUT] Final live-game-frame diagnostic:", flush=True)
-                await inspect_frame(frame)
+            print(f"[DIAG] second Aviator tab title={await game_page.title()} url={game_page.url}", flush=True)
+            await inspect_frame(game_page.main_frame)
         finally:
             # The browser was attached through CDP and is owned by noVNC/Chrome.
             # Never close the existing browser session from the extractor.
