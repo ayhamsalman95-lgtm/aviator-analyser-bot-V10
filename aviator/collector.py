@@ -1233,7 +1233,19 @@ class Collector:
             return False
 
     async def _find_live_game_frame(self, page):
-        """Return the visible, active Aviator iframe and ignore stale/other iframes."""
+        """Return the active Aviator frame, including a direct Spribe launch page."""
+        try:
+            from urllib.parse import urlparse
+            page_host = (urlparse(page.url).hostname or "").lower().rstrip(".")
+            configured_host = str(self.cfg.get("aviator_frame_host", "")).lower().rstrip(".")
+            # Direct launch URLs may host the game in the top-level frame rather than
+            # inside the casino-shell iframe used by the operator site.
+            if page_host == "launch.spribegaming.com" or (
+                configured_host and page_host == configured_host
+            ):
+                return page.main_frame
+        except Exception:
+            pass
         selector = "iframe.casino-games-stand-game-frame__iframe"
         locator = page.locator(selector)
         count = await locator.count()
@@ -1437,11 +1449,24 @@ class Collector:
                 # Use a dedicated tab for the collector; leave the user's existing tabs untouched.
                 page = await context.new_page()
 
-                self.store.set_status("opening", "فتح الموقع")
-                await page.goto(self.cfg["site_home_url"], wait_until="domcontentloaded", timeout=60000)
-                await self._wait_login(page)
-                self.store.set_status("opening_game", "فتح Aviator 52358")
-                await page.goto(self.cfg["game_url"], wait_until="domcontentloaded", timeout=60000)
+                # A launch URL is a short-lived credential-bearing URL. Supply it locally
+                # through AVIATOR_GAME_URL; never store its token in config.json or Git.
+                game_url = (os.environ.get("AVIATOR_GAME_URL") or self.cfg["game_url"]).strip()
+                from urllib.parse import urlparse
+                game_host = (urlparse(game_url).hostname or "").lower().rstrip(".")
+                direct_launch = game_host == "launch.spribegaming.com"
+                if direct_launch:
+                    if urlparse(game_url).scheme != "https":
+                        raise RuntimeError("AVIATOR_GAME_URL must use HTTPS")
+                    self.store.set_status("opening_game", "فتح رابط Aviator المباشر")
+                    print("[CHROME] Opening direct Spribe launch URL in collector tab", flush=True)
+                    await page.goto(game_url, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    self.store.set_status("opening", "فتح الموقع")
+                    await page.goto(self.cfg["site_home_url"], wait_until="domcontentloaded", timeout=60000)
+                    await self._wait_login(page)
+                    self.store.set_status("opening_game", "فتح Aviator 52358")
+                    await page.goto(game_url, wait_until="domcontentloaded", timeout=60000)
                 if page.url.startswith("chrome-error://"):
                     raise RuntimeError("Chrome could not reach the game page")
                 game_frame = None
