@@ -3,7 +3,7 @@ name: V13 final validation
 on:
   workflow_dispatch:
   push:
-    branches: [v13-prir]
+    branches: [main, v13-prir, fix/two-tab-forensic-collector]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout exact branch
         uses: actions/checkout@v4
         with:
-          ref: v13-prir
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Report revision
