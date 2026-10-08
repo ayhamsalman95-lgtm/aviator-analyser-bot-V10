@@ -228,6 +228,15 @@ async def main() -> None:
                             continue
                         frame = await iframe.content_frame()
                         if frame is None:
+                            # The iframe element can exist a little before
+                            # Playwright exposes its child frame. Give the
+                            # live game a short grace period instead of dropping it.
+                            try:
+                                await page.wait_for_timeout(500)
+                                frame = await iframe.content_frame()
+                            except Exception:
+                                frame = None
+                        if frame is None:
                             continue
                         text = ""
                         try:
