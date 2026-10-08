@@ -297,8 +297,7 @@ class Collector:
             (received_at - self._last_frame_received_at) * 1000.0
             if self._last_frame_received_at is not None else None
         )
-        self._last_frame_received_at = received_at
-        summary = binary_summary(data)
+        self._last_frame_received_at = received_at        summary = binary_summary(data)
         frame_id = f"{self.session_id}:frame:{frame_index}"
         frame_event_id = self._next_event_id(f"frame{frame_index}")
         raw_b64 = base64.b64encode(bytes(data)).decode("ascii")
@@ -597,8 +596,7 @@ class Collector:
                     "event_id": self._next_event_id("browser-unhandled"),
                     "raw_event": ev,
                 })
-                continue
-            cmd, params = unwrapped
+                continue            cmd, params = unwrapped
             event_timestamp = browser_timestamp if browser_timestamp is not None else arrival_at
             self._capture_event(
                 timestamp=event_timestamp, source="js-sfs", command=cmd, params=params,
@@ -897,8 +895,7 @@ class Collector:
 
                             self.netlog.write({
                                 "kind": "fairness_menu_exact_no_settings",
-                                "frame_url": safe_url(frame.url),
-                            })
+                                "frame_url": safe_url(frame.url),                            })
                     except Exception as exact_exc:
                         self.netlog.write({
                             "kind": "fairness_menu_exact_error",
@@ -1197,8 +1194,7 @@ class Collector:
                                     return {tag: el.tagName.toLowerCase(), text, aria, title, testid,
                                             id: clean(el.id), cls: clean(el.className),
                                             x: Math.round(r.x), y: Math.round(r.y),
-                                            w: Math.round(r.width), h: Math.round(r.height),
-                                            match: re.test(hay)};
+                                            w: Math.round(r.width), h: Math.round(r.height),                                            match: re.test(hay)};
                                 })
                                 .filter(x => x.match)
                                 .slice(0, 80);
@@ -1219,6 +1215,52 @@ class Collector:
                 except Exception as exc:
                     self.netlog.write({"kind": "fairness_click_error", "error": str(exc)})
                     return
+
+    # --------------------------------------------------------- game-frame isolation
+    @staticmethod
+    def _is_spribe_game_resource(url: str) -> bool:
+        """Keep network evidence scoped to the Spribe game, never the 1xBet shell."""
+        try:
+            from urllib.parse import urlparse
+            host = (urlparse(url).hostname or "").lower().rstrip(".")
+            return host == "spribegaming.com" or host.endswith(".spribegaming.com")
+        except Exception:
+            return False
+
+    async def _find_live_game_frame(self, page):
+        """Return the visible, active Aviator iframe and ignore stale/other iframes."""
+        selector = "iframe.casino-games-stand-game-frame__iframe"
+        locator = page.locator(selector)
+        count = await locator.count()
+        candidates = []
+        for i in range(count):
+            try:
+                iframe = locator.nth(i)
+                if not await iframe.is_visible():
+                    continue
+                frame = await iframe.content_frame()
+                if frame is None:
+                    continue
+                text = ""
+                try:
+                    text = (await frame.locator("body").inner_text(timeout=1500))[:4000]
+                except Exception:
+                    pass
+                low = text.lower()
+                stale = "session ended" in low and "opened in another browser window" in low
+                if stale:
+                    continue
+                score = 0
+                for needle in ("provably fair", "all bets", "previous", "top", "bets", "total win", "powered by"):
+                    if needle in low:
+                        score += 1
+                candidates.append((score, frame))
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
 
     # -------------------------------------------------------------- session
     async def _wait_login(self, page) -> None:
@@ -1259,6 +1301,8 @@ class Collector:
 
                 def on_ws(ws):
                     url = ws.url
+                    if not self._is_spribe_game_resource(url):
+                        return
                     self.netlog.write({
                         "kind": "ws_open",
                         "session_id": self.session_id,
@@ -1362,6 +1406,8 @@ class Collector:
                     ws.on("close", closed)
 
                 async def on_response(resp):
+                    if not self._is_spribe_game_resource(resp.url):
+                        return
                     await self.on_http_response(resp)
 
                 def attach(page):
@@ -1380,17 +1426,33 @@ class Collector:
                 await page.goto(self.cfg["game_url"], wait_until="domcontentloaded", timeout=60000)
                 if page.url.startswith("chrome-error://"):
                     raise RuntimeError("Chrome could not reach the game page")
-                self.store.set_status("collecting", "يجمع النتائج من SmartFox",
-                                      decoder=dependency_report())
+                game_frame = None
+                frame_deadline = time.monotonic() + 60.0
+                while game_frame is None and time.monotonic() < frame_deadline:
+                    for pg in list(context.pages):
+                        if pg.is_closed():
+                            continue
+                        candidate = await self._find_live_game_frame(pg)
+                        if candidate is not None:
+                            page = pg
+                            game_frame = candidate
+                            break
+                    if game_frame is None:
+                        await asyncio.sleep(0.5)
+                if game_frame is None:
+                    raise RuntimeError("Active Aviator game iframe was not found")
+                self.store.set_status("collecting", "يجمع النتائج من Aviator game frame",
+                                      decoder=dependency_report(), frame_url=safe_url(game_frame.url))
                 self.tracker.last_event_at = time.time()
                 watchdog = float(self.cfg["watchdog_no_event_s"])
                 while True:
                     if page.is_closed():
                         raise RuntimeError("game page closed")
-                    for pg in list(context.pages):
-                        for frame in list(pg.frames):
-                            try:
-                                events = await frame.evaluate(DRAIN_JS)
+                    try:
+                        refreshed = await self._find_live_game_frame(page)
+                        if refreshed is not None:
+                            game_frame = refreshed
+                        events = await game_frame.evaluate(DRAIN_JS)
                             except Exception as exc:
                                 self.netlog.write({
                                     "kind": "browser_drain_error",
@@ -1403,12 +1465,23 @@ class Collector:
                                     "error": f"{type(exc).__name__}: {exc}",
                                 })
                                 continue
-                            self.on_browser_events(events)
+                        self.on_browser_events(events)
+                    except Exception as exc:
+                        self.netlog.write({
+                            "kind": "browser_drain_error",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("browser-drain-error"),
+                            "received_at": time.time(),
+                            "timestamp_provenance": "collector_received_at",
+                            "frame_url": safe_url(game_frame.url),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        })
                     if self.cfg["fairness_autoclick"]:
                         await self.maybe_open_fairness(context)
                     if time.time() - self.tracker.last_event_at > watchdog:
                         raise SessionStale(f"no SmartFox command for {watchdog:.0f}s")
-                    self.store.set_status("collecting", "يجمع النتائج", **self.tracker.snapshot())
+                    self.store.set_status("collecting", "يجمع النتائج من Aviator game frame", **self.tracker.snapshot())
                     await asyncio.sleep(0.5)
             finally:
                 try:
