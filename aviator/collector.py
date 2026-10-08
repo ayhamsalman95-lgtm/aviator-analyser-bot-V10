@@ -1594,10 +1594,36 @@ class Collector:
                     )
                     print(f"[CHROME] Operator Aviator tab opened; waiting {launch_delay:g}s", flush=True)
                     await asyncio.sleep(launch_delay)
-                    capture_page = await context.new_page()
+                    # Create a separate visible Chrome window in the SAME browser context.
+                    # This preserves the existing profile cookies/local storage while isolating
+                    # the direct launch from the operator page. A new browser context would lose
+                    # the authenticated session, so do not use browser.new_page() here.
+                    if cdp_url:
+                        try:
+                            browser_cdp = await browser.new_browser_cdp_session()
+                            async with context.expect_page() as page_info:
+                                await browser_cdp.send(
+                                    "Target.createTarget",
+                                    {"url": "about:blank", "newWindow": True},
+                                )
+                            capture_page = await page_info.value
+                            await capture_page.evaluate(
+                                "(name) => { window.name = name; }",
+                                "__aviator_v10_capture_window__",
+                            )
+                            print("[CHROME] Separate capture window created in existing Chrome session", flush=True)
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"Could not create separate Chrome capture window: {type(exc).__name__}"
+                            ) from exc
+                    else:
+                        # Persistent-context fallback; keep the same profile/context.
+                        capture_page = await context.new_page()
+                        print("[CHROME] Capture page created in the persistent Chrome context", flush=True)
+
                     attach(capture_page)
-                    self.store.set_status("opening_direct_spribe", "فتح تبويب Spribe الثاني")
-                    print("[CHROME] Opening direct Spribe URL in second tab", flush=True)
+                    self.store.set_status("opening_direct_spribe", "فتح نافذة Spribe مستقلة")
+                    print("[CHROME] Opening direct Spribe URL in a new window", flush=True)
                     await capture_page.goto(launch_url, wait_until="domcontentloaded", timeout=60000)
                     if capture_page.url.startswith("chrome-error://"):
                         raise RuntimeError("Chrome could not reach the direct Spribe launch page")
