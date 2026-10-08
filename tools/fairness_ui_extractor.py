@@ -77,6 +77,29 @@ async def capture_fairness(frame, out) -> bool:
     return False
 
 
+async def goto_tolerant(page, url: str, label: str):
+    print(f"[NAV] Opening {label}...", flush=True)
+    try:
+        response = await page.goto(
+            url,
+            wait_until="commit",
+            timeout=30000,
+        )
+        print(
+            f"[NAV] {label} navigation committed status={response.status if response else 'none'} "
+            f"url={page.url}",
+            flush=True,
+        )
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=90000)
+        except Exception as exc:
+            print(f"[NAV] {label} DOM load still pending; continuing: {exc}", flush=True)
+        return response
+    except Exception as exc:
+        print(f"[NAV] {label} navigation warning; continuing: {exc}", flush=True)
+        return None
+
+
 async def main() -> None:
     cfg = load_config()
     profile = cfg.path("chrome_profile_dir")
@@ -95,15 +118,9 @@ async def main() -> None:
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
-            print("[NAV] Opening site home...", flush=True)
-            response = await page.goto(
-                cfg["site_home_url"],
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
+            await goto_tolerant(page, cfg["site_home_url"], "site home")
             print(
-                f"[NAV] Home loaded status={response.status if response else 'none'} "
-                f"title={await page.title()} url={page.url}",
+                f"[NAV] Home current title={await page.title()} url={page.url}",
                 flush=True,
             )
 
@@ -123,15 +140,9 @@ async def main() -> None:
                     print("[LOGIN] No authenticated session detected.", flush=True)
                     return
 
-            print("[NAV] Opening game...", flush=True)
-            response = await page.goto(
-                cfg["game_url"],
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
+            await goto_tolerant(page, cfg["game_url"], "game")
             print(
-                f"[NAV] Game loaded status={response.status if response else 'none'} "
-                f"title={await page.title()} url={page.url}",
+                f"[NAV] Game current title={await page.title()} url={page.url}",
                 flush=True,
             )
 
