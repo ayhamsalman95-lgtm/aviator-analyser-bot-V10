@@ -1434,7 +1434,8 @@ class Collector:
                 for pg in context.pages:
                     attach(pg)
                 context.on("page", attach)
-                page = context.pages[0] if context.pages else await context.new_page()
+                # Use a dedicated tab for the collector; leave the user's existing tabs untouched.
+                page = await context.new_page()
 
                 self.store.set_status("opening", "فتح الموقع")
                 await page.goto(self.cfg["site_home_url"], wait_until="domcontentloaded", timeout=60000)
@@ -1489,6 +1490,11 @@ class Collector:
                     self.store.set_status("collecting", "يجمع النتائج من Aviator game frame", **self.tracker.snapshot())
                     await asyncio.sleep(0.5)
             finally:
+                if not owns_context and 'page' in locals() and page is not None:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
                 if owns_context:
                     try:
                         await context.close()
