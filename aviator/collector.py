@@ -24,6 +24,7 @@ from .db import Store
 from .extract import profile_for_game
 from .modes import FORENSIC, HTTP_BODY_INSPECT, HTTP_BODY_OVERSIZED, HTTP_BODY_SKIP, HTTP_INSPECT_MAX_BYTES, CollectionPolicy
 from .netlog import RotatingJsonlLog, safe_url
+from .launch import launch_delay_seconds, redact_sensitive_text, validate_launch_url
 from .pre_round import ObservableEvent, PreRoundBuffer
 from .sfs_codec import SfsDecoder, binary_summary, dependency_report, unwrap_browser_event
 from .tracker import RoundTracker
@@ -1238,11 +1239,17 @@ class Collector:
             from urllib.parse import urlparse
             page_host = (urlparse(page.url).hostname or "").lower().rstrip(".")
             configured_host = str(self.cfg.get("aviator_frame_host", "")).lower().rstrip(".")
-            # Direct launch URLs may host the game in the top-level frame rather than
-            # inside the casino-shell iframe used by the operator site.
-            if page_host == "launch.spribegaming.com" or (
-                configured_host and page_host == configured_host
-            ):
+            # Prefer the configured actual game frame, including when the direct launch
+            # page embeds it. A launch host alone does not prove the game is top-level.
+            if configured_host:
+                for frame in list(page.frames):
+                    try:
+                        frame_host = (urlparse(frame.url).hostname or "").lower().rstrip(".")
+                        if frame_host == configured_host or frame_host.endswith("." + configured_host):
+                            return frame
+                    except Exception:
+                        continue
+            if page_host == "launch.spribegaming.com":
                 return page.main_frame
         except Exception:
             pass
@@ -1306,6 +1313,15 @@ class Collector:
         self._last_frame_received_at = None
         self.collector_run_id = uuid.uuid4().hex
         self._event_index = 0
+
+        # Validate the credential-bearing launch URL before opening browser tabs.
+        # Without AVIATOR_GAME_URL, retain the configured operator-page workflow.
+        raw_launch_url = os.environ.get("AVIATOR_GAME_URL", "").strip()
+        launch_url = validate_launch_url(raw_launch_url) if raw_launch_url else None
+        launch_delay = launch_delay_seconds()
+        operator_url = str(self.cfg["game_url"])
+        site_home_url = str(self.cfg["site_home_url"])
+
         from playwright.async_api import async_playwright  # imported lazily (optional in tests)
         profile = self.cfg.path("chrome_profile_dir")
         profile.mkdir(parents=True, exist_ok=True)
@@ -1313,7 +1329,8 @@ class Collector:
             cdp_url = os.environ.get("AVIATOR_CDP_URL")
             owns_context = True
             if cdp_url:
-                print(f"[CDP] Connecting to existing Chrome: {cdp_url}", flush=True)
+                # Never print arbitrary CDP URLs; they can contain credentials.
+                print("[CDP] Connecting to existing Chrome", flush=True)
                 browser = await p.chromium.connect_over_cdp(cdp_url)
                 contexts = browser.contexts
                 if not contexts:
@@ -1325,6 +1342,9 @@ class Collector:
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=str(profile), channel="chrome", headless=False,
                     viewport={"width": 1440, "height": 900}, args=["--disable-notifications"])
+
+            operator_page = None
+            capture_page = None
             try:
                 await context.add_init_script(INJECT_JS)
 
@@ -1341,6 +1361,7 @@ class Collector:
                         "received_monotonic": time.monotonic(),
                         "timestamp_provenance": "collector_received_at",
                         "url": safe_url(url),
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
                     })
 
                     def received(payload):
@@ -1362,7 +1383,7 @@ class Collector:
                                 "frame_index": self._frame_index if binary else None,
                                 "frame_id": (f"{self.session_id}:frame:{self._frame_index}"
                                              if binary else None),
-                                "error": f"{type(exc).__name__}: {exc}",
+                                "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
                             })
                     ws.on("framereceived", received)
 
@@ -1374,157 +1395,307 @@ class Collector:
                             if binary:
                                 raw = bytes(payload)
                                 self.netlog.write({
-                                    "kind": "ws_frame_sent",
-                                    "schema_version": 3,
+                                    "kind": "ws_frame_sent", "schema_version": 3,
                                     "session_id": self.session_id,
                                     "collector_run_id": self.collector_run_id,
                                     "event_id": self._next_event_id("ws-frame-sent"),
-                                    "sent_at": sent_at,
-                                    "sent_monotonic": sent_monotonic,
+                                    "sent_at": sent_at, "sent_monotonic": sent_monotonic,
                                     "timestamp_provenance": "collector_sent_at",
-                                    "url": safe_url(url),
-                                    "direction": "outgoing",
+                                    "url": safe_url(url), "direction": "outgoing",
                                     "encoding": "base64",
                                     "payload_b64": base64.b64encode(raw).decode("ascii"),
-                                    "payload_complete": True,
-                                    "frame_size": len(raw),
+                                    "payload_complete": True, "frame_size": len(raw),
                                     "sha256": hashlib.sha256(raw).hexdigest(),
                                 })
                             else:
                                 text = str(payload)
                                 self.netlog.write({
-                                    "kind": "ws_text_frame_sent",
-                                    "schema_version": 3,
+                                    "kind": "ws_text_frame_sent", "schema_version": 3,
                                     "session_id": self.session_id,
                                     "collector_run_id": self.collector_run_id,
                                     "event_id": self._next_event_id("ws-text-frame-sent"),
-                                    "sent_at": sent_at,
-                                    "sent_monotonic": sent_monotonic,
+                                    "sent_at": sent_at, "sent_monotonic": sent_monotonic,
                                     "timestamp_provenance": "collector_sent_at",
-                                    "url": safe_url(url),
-                                    "direction": "outgoing",
+                                    "url": safe_url(url), "direction": "outgoing",
                                     "encoding": "text",
-                                    "payload": text,
+                                    "payload": redact_sensitive_text(text),
                                     "payload_complete": True,
                                 })
                         except Exception as exc:
                             self.netlog.write({
                                 "kind": "ws_frame_sent_handler_error",
-                                "schema_version": 3,
                                 "session_id": self.session_id,
                                 "collector_run_id": self.collector_run_id,
                                 "event_id": self._next_event_id("ws-frame-sent-error"),
                                 "sent_at": time.time(),
                                 "timestamp_provenance": "collector_sent_at",
                                 "url": safe_url(url),
-                                "error": f"{type(exc).__name__}: {exc}",
+                                "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
                             })
                     ws.on("framesent", sent)
 
                     def closed(*_):
                         self.netlog.write({
-                            "kind": "ws_close",
-                            "session_id": self.session_id,
+                            "kind": "ws_close", "session_id": self.session_id,
                             "collector_run_id": self.collector_run_id,
                             "event_id": self._next_event_id("ws-close"),
-                            "received_at": time.time(),
-                            "received_monotonic": time.monotonic(),
+                            "received_at": time.time(), "received_monotonic": time.monotonic(),
                             "timestamp_provenance": "collector_received_at",
                             "url": safe_url(url),
+                            "capture_tab": "direct_spribe" if launch_url else "operator_game",
                         })
                     ws.on("close", closed)
+
+                async def on_request(req):
+                    if not self._is_spribe_game_resource(req.url):
+                        return
+                    try:
+                        resource_type = req.resource_type
+                    except Exception:
+                        resource_type = None
+                    self.netlog.write({
+                        "kind": "http_request", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("http-request"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_request",
+                        "url": safe_url(req.url), "method": req.method,
+                        "resource_type": resource_type,
+                        "is_navigation_request": bool(req.is_navigation_request()),
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                    })
 
                 async def on_response(resp):
                     if not self._is_spribe_game_resource(resp.url):
                         return
                     await self.on_http_response(resp)
 
+                def on_request_failed(req):
+                    if not self._is_spribe_game_resource(req.url):
+                        return
+                    failure = None
+                    try:
+                        failure = req.failure
+                    except Exception:
+                        pass
+                    self.netlog.write({
+                        "kind": "http_request_failed", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("http-request-failed"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_request_failure",
+                        "url": safe_url(req.url), "method": req.method,
+                        "failure": redact_sensitive_text(failure or "unknown"),
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                    })
+
+                def on_frame_navigated(frame):
+                    if not self._is_spribe_game_resource(frame.url):
+                        return
+                    self.netlog.write({
+                        "kind": "game_frame_navigated", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("frame-navigated"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_frame_navigation",
+                        "url": safe_url(frame.url),
+                        "is_main_frame": frame == frame.page.main_frame,
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                    })
+
+                def on_frame_attached(frame):
+                    self.netlog.write({
+                        "kind": "game_frame_attached", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("frame-attached"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_frame_attachment",
+                        "url": safe_url(frame.url),
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                    })
+
+                def on_frame_detached(frame):
+                    self.netlog.write({
+                        "kind": "game_frame_detached", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("frame-detached"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_frame_detachment",
+                        "url": safe_url(frame.url),
+                        "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                    })
+
                 def attach(page):
+                    # These handlers belong only to the selected capture page. In direct
+                    # mode, attach before goto so the initial handshake/frames are observed.
                     page.on("websocket", on_ws)
+                    page.on("request", on_request)
                     page.on("response", on_response)
+                    page.on("requestfailed", on_request_failed)
+                    page.on("framenavigated", on_frame_navigated)
+                    page.on("frameattached", on_frame_attached)
+                    page.on("framedetached", on_frame_detached)
 
-                for pg in context.pages:
-                    attach(pg)
-                context.on("page", attach)
-                # Use a dedicated tab for the collector; leave the user's existing tabs untouched.
-                page = await context.new_page()
-
-                # A launch URL is a short-lived credential-bearing URL. Supply it locally
-                # through AVIATOR_GAME_URL; never store its token in config.json or Git.
-                game_url = (os.environ.get("AVIATOR_GAME_URL") or self.cfg["game_url"]).strip()
-                from urllib.parse import urlparse
-                game_host = (urlparse(game_url).hostname or "").lower().rstrip(".")
-                direct_launch = game_host == "launch.spribegaming.com"
-                if direct_launch:
-                    if urlparse(game_url).scheme != "https":
-                        raise RuntimeError("AVIATOR_GAME_URL must use HTTPS")
-                    self.store.set_status("opening_game", "فتح رابط Aviator المباشر")
-                    print("[CHROME] Opening direct Spribe launch URL in collector tab", flush=True)
-                    await page.goto(game_url, wait_until="domcontentloaded", timeout=60000)
-                else:
-                    self.store.set_status("opening", "فتح الموقع")
-                    await page.goto(self.cfg["site_home_url"], wait_until="domcontentloaded", timeout=60000)
-                    await self._wait_login(page)
-                    self.store.set_status("opening_game", "فتح Aviator 52358")
-                    await page.goto(game_url, wait_until="domcontentloaded", timeout=60000)
-                if page.url.startswith("chrome-error://"):
-                    raise RuntimeError("Chrome could not reach the game page")
-                game_frame = None
-                frame_deadline = time.monotonic() + 60.0
-                while game_frame is None and time.monotonic() < frame_deadline:
-                    for pg in list(context.pages):
-                        if pg.is_closed():
-                            continue
-                        candidate = await self._find_live_game_frame(pg)
-                        if candidate is not None:
-                            page = pg
-                            game_frame = candidate
+                # Reuse only a tab explicitly marked by this collector. Never navigate an
+                # arbitrary pre-existing user tab when attaching over CDP.
+                operator_marker = "__aviator_v10_operator_tab__"
+                for candidate in list(context.pages):
+                    if candidate.is_closed():
+                        continue
+                    try:
+                        if await candidate.evaluate("window.name") == operator_marker:
+                            operator_page = candidate
                             break
-                    if game_frame is None:
-                        await asyncio.sleep(0.5)
-                if game_frame is None:
-                    raise RuntimeError("Active Aviator game iframe was not found")
-                self.store.set_status("collecting", "يجمع النتائج من Aviator game frame",
-                                      decoder=dependency_report(), frame_url=safe_url(game_frame.url))
+                    except Exception:
+                        continue
+                if operator_page is None:
+                    if owns_context:
+                        # launch_persistent_context often creates an initial blank tab.
+                        operator_page = next(
+                            (pg for pg in list(context.pages)
+                             if not pg.is_closed() and pg.url == "about:blank"),
+                            None,
+                        )
+                    if operator_page is None:
+                        operator_page = await context.new_page()
+                    await operator_page.evaluate("(name) => { window.name = name; }", operator_marker)
+
+                self.store.set_status("opening", "فتح موقع 1xBet")
+                await operator_page.goto(site_home_url, wait_until="domcontentloaded", timeout=60000)
+                await self._wait_login(operator_page)
+                self.store.set_status("opening_game", "فتح Aviator 52358")
+                if not launch_url:
+                    # Backward-compatible mode: capture the operator's game tab directly.
+                    attach(operator_page)
+                await operator_page.goto(operator_url, wait_until="domcontentloaded", timeout=60000)
+                if operator_page.url.startswith("chrome-error://"):
+                    raise RuntimeError("Chrome could not reach the configured operator game page")
+
+                if launch_url:
+                    self.store.set_status(
+                        "waiting_for_direct_launch",
+                        f"انتظار {launch_delay:g} ثانية قبل فتح تبويب Spribe الثاني",
+                        launch_delay_s=launch_delay,
+                    )
+                    print(f"[CHROME] Operator Aviator tab opened; waiting {launch_delay:g}s", flush=True)
+                    await asyncio.sleep(launch_delay)
+                    capture_page = await context.new_page()
+                    attach(capture_page)
+                    self.store.set_status("opening_direct_spribe", "فتح تبويب Spribe الثاني")
+                    print("[CHROME] Opening direct Spribe URL in second tab", flush=True)
+                    await capture_page.goto(launch_url, wait_until="domcontentloaded", timeout=60000)
+                    if capture_page.url.startswith("chrome-error://"):
+                        raise RuntimeError("Chrome could not reach the direct Spribe launch page")
+                else:
+                    capture_page = operator_page
+                    print("[CHROME] AVIATOR_GAME_URL is unset; using the operator game tab", flush=True)
+
                 self.tracker.last_event_at = time.time()
                 watchdog = float(self.cfg["watchdog_no_event_s"])
+                game_frame = None
+                last_frame_diagnostic = 0.0
                 while True:
-                    if page.is_closed():
-                        raise RuntimeError("game page closed")
+                    if capture_page.is_closed():
+                        raise RuntimeError("collector capture tab was closed")
                     try:
-                        refreshed = await self._find_live_game_frame(page)
+                        refreshed = await self._find_live_game_frame(capture_page)
                         if refreshed is not None:
+                            if game_frame is None or refreshed != game_frame:
+                                self.netlog.write({
+                                    "kind": "game_frame_selected", "schema_version": 3,
+                                    "session_id": self.session_id,
+                                    "collector_run_id": self.collector_run_id,
+                                    "event_id": self._next_event_id("frame-selected"),
+                                    "received_at": time.time(),
+                                    "timestamp_provenance": "collector_observed_frame",
+                                    "frame_url": safe_url(refreshed.url),
+                                    "capture_tab": "direct_spribe" if launch_url else "operator_game",
+                                })
                             game_frame = refreshed
-                        events = await game_frame.evaluate(DRAIN_JS)
-                        self.on_browser_events(events)
+                        if game_frame is not None:
+                            try:
+                                events = await game_frame.evaluate(DRAIN_JS)
+                                self.on_browser_events(events)
+                            except Exception as exc:
+                                self.netlog.write({
+                                    "kind": "browser_drain_error",
+                                    "session_id": self.session_id,
+                                    "collector_run_id": self.collector_run_id,
+                                    "event_id": self._next_event_id("browser-drain-error"),
+                                    "received_at": time.time(),
+                                    "timestamp_provenance": "collector_received_at",
+                                    "frame_url": safe_url(game_frame.url),
+                                    "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
+                                })
+                                game_frame = None
+                        elif time.monotonic() - last_frame_diagnostic >= 15:
+                            last_frame_diagnostic = time.monotonic()
+                            self.netlog.write({
+                                "kind": "game_frame_not_yet_detected", "schema_version": 3,
+                                "session_id": self.session_id,
+                                "collector_run_id": self.collector_run_id,
+                                "event_id": self._next_event_id("frame-not-detected"),
+                                "received_at": time.time(),
+                                "timestamp_provenance": "collector_received_at",
+                                "capture_page_url": safe_url(capture_page.url),
+                                "network_capture_active": True,
+                                "note": "WebSocket listeners remain active while frame detection retries",
+                            })
                     except Exception as exc:
                         self.netlog.write({
-                            "kind": "browser_drain_error",
+                            "kind": "browser_monitor_error",
                             "session_id": self.session_id,
                             "collector_run_id": self.collector_run_id,
-                            "event_id": self._next_event_id("browser-drain-error"),
+                            "event_id": self._next_event_id("browser-monitor-error"),
                             "received_at": time.time(),
                             "timestamp_provenance": "collector_received_at",
-                            "frame_url": safe_url(game_frame.url),
-                            "error": f"{type(exc).__name__}: {exc}",
+                            "capture_page_url": safe_url(capture_page.url),
+                            "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
                         })
-                    if self.cfg["fairness_autoclick"]:
+                    if self.cfg["fairness_autoclick"] and game_frame is not None:
                         await self.maybe_open_fairness(context)
                     if time.time() - self.tracker.last_event_at > watchdog:
                         raise SessionStale(f"no SmartFox command for {watchdog:.0f}s")
-                    self.store.set_status("collecting", "يجمع النتائج من Aviator game frame", **self.tracker.snapshot())
+                    self.store.set_status(
+                        "collecting",
+                        "يجمع أدلة WebSocket من تبويب Spribe الثاني" if launch_url
+                        else "يجمع النتائج من Aviator game frame",
+                        **self.tracker.snapshot(),
+                    )
                     await asyncio.sleep(0.5)
             finally:
-                if not owns_context and 'page' in locals() and page is not None:
+                # In CDP mode, preserve the operator tab. Only the separate direct
+                # capture tab is disposable. Never close a page selected by frame scan.
+                if not owns_context and capture_page is not None and capture_page is not operator_page:
                     try:
-                        await page.close()
-                    except Exception:
-                        pass
+                        if not capture_page.is_closed():
+                            await capture_page.close()
+                    except Exception as exc:
+                        self.netlog.write({
+                            "kind": "collector_cleanup_error",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("cleanup-error"),
+                            "received_at": time.time(),
+                            "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
+                        })
                 if owns_context:
                     try:
                         await context.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.netlog.write({
+                            "kind": "collector_cleanup_error",
+                            "session_id": self.session_id,
+                            "collector_run_id": self.collector_run_id,
+                            "event_id": self._next_event_id("cleanup-owned-context-error"),
+                            "received_at": time.time(),
+                            "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
+                        })
 
     async def supervise(self) -> None:
         backoff = [float(x) for x in self.cfg["reconnect_backoff_s"]] or [10.0]
@@ -1542,10 +1713,9 @@ class Collector:
                     failures = 0  # the session was healthy for a while
                 delay = backoff[min(failures, len(backoff) - 1)]
                 failures += 1
-                self.store.set_status("reconnecting", f"{type(exc).__name__}: {exc}", retry_in_s=delay,
-                                      failures=failures)
-                print(f"[COLLECTOR] session ended: {type(exc).__name__}: {exc}; reconnect in {delay:.0f}s",
-                      flush=True)
+                safe_error = redact_sensitive_text(f"{type(exc).__name__}: {exc}")
+                self.store.set_status("reconnecting", safe_error, retry_in_s=delay, failures=failures)
+                print(f"[COLLECTOR] session ended: {safe_error}; reconnect in {delay:.0f}s", flush=True)
                 await asyncio.sleep(delay)
 
 
