@@ -297,7 +297,8 @@ class Collector:
             (received_at - self._last_frame_received_at) * 1000.0
             if self._last_frame_received_at is not None else None
         )
-        self._last_frame_received_at = received_at        summary = binary_summary(data)
+        self._last_frame_received_at = received_at
+        summary = binary_summary(data)
         frame_id = f"{self.session_id}:frame:{frame_index}"
         frame_event_id = self._next_event_id(f"frame{frame_index}")
         raw_b64 = base64.b64encode(bytes(data)).decode("ascii")
@@ -596,7 +597,8 @@ class Collector:
                     "event_id": self._next_event_id("browser-unhandled"),
                     "raw_event": ev,
                 })
-                continue            cmd, params = unwrapped
+                continue
+            cmd, params = unwrapped
             event_timestamp = browser_timestamp if browser_timestamp is not None else arrival_at
             self._capture_event(
                 timestamp=event_timestamp, source="js-sfs", command=cmd, params=params,
@@ -895,7 +897,8 @@ class Collector:
 
                             self.netlog.write({
                                 "kind": "fairness_menu_exact_no_settings",
-                                "frame_url": safe_url(frame.url),                            })
+                                "frame_url": safe_url(frame.url),
+                            })
                     except Exception as exact_exc:
                         self.netlog.write({
                             "kind": "fairness_menu_exact_error",
@@ -1194,7 +1197,8 @@ class Collector:
                                     return {tag: el.tagName.toLowerCase(), text, aria, title, testid,
                                             id: clean(el.id), cls: clean(el.className),
                                             x: Math.round(r.x), y: Math.round(r.y),
-                                            w: Math.round(r.width), h: Math.round(r.height),                                            match: re.test(hay)};
+                                            w: Math.round(r.width), h: Math.round(r.height),
+                                            match: re.test(hay)};
                                 })
                                 .filter(x => x.match)
                                 .slice(0, 80);
@@ -1453,18 +1457,6 @@ class Collector:
                         if refreshed is not None:
                             game_frame = refreshed
                         events = await game_frame.evaluate(DRAIN_JS)
-                            except Exception as exc:
-                                self.netlog.write({
-                                    "kind": "browser_drain_error",
-                                    "session_id": self.session_id,
-                                    "collector_run_id": self.collector_run_id,
-                                    "event_id": self._next_event_id("browser-drain-error"),
-                                    "received_at": time.time(),
-                                    "timestamp_provenance": "collector_received_at",
-                                    "frame_url": safe_url(frame.url),
-                                    "error": f"{type(exc).__name__}: {exc}",
-                                })
-                                continue
                         self.on_browser_events(events)
                     except Exception as exc:
                         self.netlog.write({
@@ -1498,24 +1490,3 @@ class Collector:
             started = time.monotonic()
             try:
                 await self.run_session()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if time.monotonic() - started > 300:
-                    failures = 0  # the session was healthy for a while
-                delay = backoff[min(failures, len(backoff) - 1)]
-                failures += 1
-                self.store.set_status("reconnecting", f"{type(exc).__name__}: {exc}", retry_in_s=delay,
-                                      failures=failures)
-                print(f"[COLLECTOR] session ended: {type(exc).__name__}: {exc}; reconnect in {delay:.0f}s",
-                      flush=True)
-                await asyncio.sleep(delay)
-
-
-def main() -> None:
-    col = Collector()
-    try:
-        asyncio.run(col.supervise())
-    except KeyboardInterrupt:
-        col.store.set_status("stopped", "stopped by user")
-        print("[COLLECTOR] stopped", flush=True)
