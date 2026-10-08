@@ -234,62 +234,56 @@ async def main() -> None:
 
             deadline = time.monotonic() + 120
             last_report = 0.0
-            inspected = set()
+            inspected = False
 
             while time.monotonic() < deadline:
-                frames = list(page.frames)
-                host_frames = await find_live_game_frames()
                 now = time.monotonic()
+                target = game_page.main_frame
                 if now - last_report >= 10:
-                    print(f"[SCAN] frames={len(frames)} live_game_frames={len(host_frames)} page_url={page.url}", flush=True)
-                    for f in frames:
-                        print(f"[FRAME] {f.url}", flush=True)
+                    print(f"[SCAN] second Aviator tab url={game_page.url}", flush=True)
                     last_report = now
 
-                for frame in host_frames:
-                    if await capture_fairness(frame, out):
+                if target.url and "launch.spribegaming.com/aviator" in target.url:
+                    if await capture_fairness(target, out):
                         return
-                    frame_key = frame.url
-                    if frame_key not in inspected:
-                        inspected.add(frame_key)
-                        print("[FRAME-DIAG] Inspecting target iframe once.", flush=True)
-                        await inspect_frame(frame)
+                    if not inspected:
+                        inspected = True
+                        print("[FRAME-DIAG] Inspecting second Aviator tab once.", flush=True)
+                        await inspect_frame(target)
 
-                    menu_candidates = [
+                    for candidate_selector in [
                         "div.dropdown-toggle.button",
                         "[class*='dropdown-toggle']",
                         "[aria-label*='menu' i]",
                         "[title*='menu' i]",
                         "button"
-                    ]
-                    clicked = False
-                    for selector in menu_candidates:
-                        loc = frame.locator(selector)
-                        count = await loc.count()
-                        for i in range(min(count, 20)):
+                    ]:
+                        loc = target.locator(candidate_selector)
+                        for i in range(min(await loc.count(), 20)):
                             item = loc.nth(i)
                             try:
-                                if await item.is_visible():
-                                    txt = (await item.inner_text()).strip()
-                                    aria = await item.get_attribute("aria-label")
-                                    title = await item.get_attribute("title")
-                                    cls = await item.get_attribute("class") or ""
-                                    if selector == "button" and not (
-                                        "menu" in f"{txt} {aria} {title} {cls}".lower()
-                                        or "dropdown" in cls.lower()
-                                    ):
-                                        continue
-                                    print(f"[MENU] Clicking candidate selector={selector} text={txt!r} aria={aria!r}", flush=True)
-                                    await item.click(timeout=2500)
-                                    await frame.wait_for_timeout(1000)
-                                    clicked = True
-                                    break
+                                if not await item.is_visible():
+                                    continue
+                                txt = (await item.inner_text()).strip()
+                                aria = await item.get_attribute("aria-label")
+                                title = await item.get_attribute("title")
+                                cls = await item.get_attribute("class") or ""
+                                if candidate_selector == "button" and not (
+                                    "menu" in f"{txt} {aria} {title} {cls}".lower()
+                                    or "dropdown" in cls.lower()
+                                ):
+                                    continue
+                                print(f"[MENU] Clicking candidate selector={candidate_selector} text={txt!r}", flush=True)
+                                await item.click(timeout=2500)
+                                await target.wait_for_timeout(1000)
+                                break
                             except Exception:
                                 continue
-                        if clicked:
-                            break
+                        else:
+                            continue
+                        break
 
-                    if await capture_fairness(frame, out):
+                    if await capture_fairness(target, out):
                         return
 
                 await asyncio.sleep(1)
