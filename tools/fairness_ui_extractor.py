@@ -88,6 +88,8 @@ async def inspect_frame(frame) -> None:
               s.display !== "none" && s.visibility !== "hidden" &&
               parseFloat(s.opacity || "1") > 0.05;
           };
+          const all = Array.from(document.querySelectorAll("*"));
+          const visibleElements = all.filter(visible);
           const nodes = Array.from(document.querySelectorAll(
             "button,a,[role='button'],input,select,textarea"
           )).filter(visible).slice(0, 150).map(el => ({
@@ -98,22 +100,78 @@ async def inspect_frame(frame) -> None:
             cls: clean(el.className),
             type: clean(el.getAttribute("type"))
           }));
+          const canvases = Array.from(document.querySelectorAll("canvas")).map(c => ({
+            width: c.width,
+            height: c.height,
+            rect: (() => { const r=c.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; })(),
+            cls: clean(c.className),
+            id: clean(c.id)
+          }));
+          const shadows = [];
+          for (const el of all) {
+            if (el.shadowRoot) {
+              shadows.push({
+                tag: el.tagName.toLowerCase(),
+                id: clean(el.id),
+                cls: clean(el.className),
+                shadow_html: clean(el.shadowRoot.innerHTML).slice(0, 4000)
+              });
+            }
+          }
+          const scripts = Array.from(document.scripts).map(s => ({
+            src: clean(s.src),
+            type: clean(s.type),
+            len: (s.textContent || "").length
+          }));
           return {
             title: clean(document.title),
+            ready_state: document.readyState,
+            html_len: document.documentElement?.outerHTML?.length || 0,
+            body_html: clean(document.body?.innerHTML || "").slice(0, 12000),
             text: clean(document.body?.innerText || "").slice(0, 12000),
-            nodes
+            visible_element_count: visibleElements.length,
+            nodes,
+            canvases,
+            shadow_count: shadows.length,
+            shadows,
+            scripts
           };
         }""")
         print("[FRAME-DIAG] title=" + info["title"], flush=True)
+        print("[FRAME-DIAG] ready_state=" + info["ready_state"], flush=True)
+        print(f"[FRAME-DIAG] html_len={info['html_len']} visible_elements={info['visible_element_count']}", flush=True)
+        print("[FRAME-DIAG] body_html=" + info["body_html"], flush=True)
         print("[FRAME-DIAG] text=" + info["text"], flush=True)
+        print("[FRAME-DIAG] canvases=" + json.dumps(info["canvases"], ensure_ascii=False), flush=True)
+        print(f"[FRAME-DIAG] shadow_count={info['shadow_count']}", flush=True)
+        for s in info["shadows"]:
+            print("[FRAME-SHADOW] " + json.dumps(s, ensure_ascii=False, separators=(",", ":")), flush=True)
         for n in info["nodes"]:
-            print(
-                "[FRAME-ELEMENT] "
-                + json.dumps(n, ensure_ascii=False, separators=(",", ":")),
-                flush=True,
-            )
+            print("[FRAME-ELEMENT] " + json.dumps(n, ensure_ascii=False, separators=(",", ":")), flush=True)
+        for s in info["scripts"]:
+            if s["src"]:
+                print("[FRAME-SCRIPT] " + json.dumps(s, ensure_ascii=False, separators=(",", ":")), flush=True)
     except Exception as exc:
         print(f"[FRAME-DIAG] inspect failed: {exc}", flush=True)
+
+
+async def goto_tolerant(page, url: str, label: str):
+    print(f"[NAV] Opening {label}...", flush=True)
+    try:
+        response = await page.goto(url, wait_until="commit", timeout=30000)
+        print(
+            f"[NAV] {label} navigation committed status={response.status if response else 'none'} "
+            f"url={page.url}",
+            flush=True,
+        )
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=90000)
+        except Exception as exc:
+            print(f"[NAV] {label} DOM load still pending; continuing: {exc}", flush=True)
+        return response
+    except Exception as exc:
+        print(f"[NAV] {label} navigation warning; continuing: {exc}", flush=True)
+        return None
 
 
 async def main() -> None:
@@ -135,17 +193,10 @@ async def main() -> None:
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await goto_tolerant(page, cfg["site_home_url"], "site home")
-            print(
-                f"[NAV] Home current title={await page.title()} url={page.url}",
-                flush=True,
-            )
+            print(f"[NAV] Home current title={await page.title()} url={page.url}", flush=True)
 
             if await page.locator("input[type='password']").count():
-                print(
-                    "[LOGIN] Login page detected. Headless mode cannot accept manual input; "
-                    "waiting for an existing authenticated session.",
-                    flush=True,
-                )
+                print("[LOGIN] Login page detected. Headless mode cannot accept manual input; waiting for an existing authenticated session.", flush=True)
                 deadline = time.monotonic() + float(cfg["login_wait_s"])
                 while time.monotonic() < deadline:
                     await asyncio.sleep(2)
@@ -157,10 +208,7 @@ async def main() -> None:
                     return
 
             await goto_tolerant(page, cfg["game_url"], "game")
-            print(
-                f"[NAV] Game current title={await page.title()} url={page.url}",
-                flush=True,
-            )
+            print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
             host = cfg["aviator_frame_host"]
             deadline = time.monotonic() + 90
@@ -173,8 +221,7 @@ async def main() -> None:
                 now = time.monotonic()
                 if now - last_report >= 10:
                     print(
-                        f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} "
-                        f"page_url={page.url}",
+                        f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} page_url={page.url}",
                         flush=True,
                     )
                     for f in frames:
@@ -184,7 +231,6 @@ async def main() -> None:
                 for frame in host_frames:
                     if await capture_fairness(frame, out):
                         return
-
                     frame_key = frame.url
                     if frame_key not in inspected:
                         inspected.add(frame_key)
@@ -215,11 +261,7 @@ async def main() -> None:
                                         or "dropdown" in cls.lower()
                                     ):
                                         continue
-                                    print(
-                                        f"[MENU] Clicking candidate selector={selector} "
-                                        f"text={txt!r} aria={aria!r}",
-                                        flush=True,
-                                    )
+                                    print(f"[MENU] Clicking candidate selector={selector} text={txt!r} aria={aria!r}", flush=True)
                                     await item.click(timeout=2500)
                                     await frame.wait_for_timeout(1000)
                                     clicked = True
@@ -242,25 +284,6 @@ async def main() -> None:
                     await inspect_frame(frame)
         finally:
             await context.close()
-
-
-async def goto_tolerant(page, url: str, label: str):
-    print(f"[NAV] Opening {label}...", flush=True)
-    try:
-        response = await page.goto(url, wait_until="commit", timeout=30000)
-        print(
-            f"[NAV] {label} navigation committed status={response.status if response else 'none'} "
-            f"url={page.url}",
-            flush=True,
-        )
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=90000)
-        except Exception as exc:
-            print(f"[NAV] {label} DOM load still pending; continuing: {exc}", flush=True)
-        return response
-    except Exception as exc:
-        print(f"[NAV] {label} navigation warning; continuing: {exc}", flush=True)
-        return None
 
 
 if __name__ == "__main__":
