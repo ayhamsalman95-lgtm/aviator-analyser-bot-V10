@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SECRET_QUERY_KEYS = re.compile(
     r"(?i)^(token|access_token|refresh_token|authorization|auth|password|pass|secret|signature|sig|"
-    r"cookie|session|sid|sessionid|jwt|key|apikey|api_key)$")
+    r"cookie|session|sid|sessionid|jwt|key|apikey|api_key|user|user_id|userid|return_url)$")
 SECRET_JSON_KEYS = re.compile(
     r"(?i)(password|passwd|token|authorization|cookie|set-cookie|secret|session|jwt|apikey|api_key)")
 
