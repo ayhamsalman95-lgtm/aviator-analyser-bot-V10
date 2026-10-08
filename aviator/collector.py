@@ -1589,15 +1589,47 @@ class Collector:
                 if launch_url:
                     self.store.set_status(
                         "waiting_for_direct_launch",
-                        f"انتظار {launch_delay:g} ثانية قبل فتح تبويب Spribe الثاني",
+                        f"انتظار {launch_delay:g} ثانية قبل فتح نافذة Chrome مستقلة للعبة Spribe",
                         launch_delay_s=launch_delay,
                     )
                     print(f"[CHROME] Operator Aviator tab opened; waiting {launch_delay:g}s", flush=True)
                     await asyncio.sleep(launch_delay)
-                    capture_page = await context.new_page()
+                    # Open the direct launch in a real, separate Chrome window (not a tab).
+                    # Target.createTarget(newWindow=True) creates it in the same default browser
+                    # context, so existing login cookies/storage remain available.
+                    existing_pages = list(context.pages)
+                    cdp_browser = context.browser
+                    if cdp_browser is None:
+                        raise RuntimeError("Cannot create a separate Chrome window: browser handle unavailable")
+                    browser_cdp = await cdp_browser.new_browser_cdp_session()
+                    try:
+                        await browser_cdp.send(
+                            "Target.createTarget",
+                            {"url": "about:blank", "newWindow": True},
+                        )
+                    finally:
+                        await browser_cdp.detach()
+
+                    for _ in range(100):
+                        capture_page = next(
+                            (candidate for candidate in context.pages
+                             if not candidate.is_closed()
+                             and all(candidate != old_page for old_page in existing_pages)),
+                            None,
+                        )
+                        if capture_page is not None:
+                            break
+                        await asyncio.sleep(0.1)
+                    if capture_page is None:
+                        raise RuntimeError("Chrome created no Playwright-visible page for the new window")
+
+                    await capture_page.evaluate(
+                        "(name) => { window.name = name; }",
+                        "__aviator_v10_capture_window__",
+                    )
                     attach(capture_page)
-                    self.store.set_status("opening_direct_spribe", "فتح تبويب Spribe الثاني")
-                    print("[CHROME] Opening direct Spribe URL in second tab", flush=True)
+                    self.store.set_status("opening_direct_spribe", "فتح نافذة Chrome مستقلة للعبة Spribe")
+                    print("[CHROME] Opening direct Spribe URL in a new Chrome window", flush=True)
                     await capture_page.goto(launch_url, wait_until="domcontentloaded", timeout=60000)
                     if capture_page.url.startswith("chrome-error://"):
                         raise RuntimeError("Chrome could not reach the direct Spribe launch page")
@@ -1674,7 +1706,7 @@ class Collector:
                         raise SessionStale(f"no Spribe network activity for {watchdog:.0f}s")
                     self.store.set_status(
                         "collecting",
-                        "يجمع أدلة WebSocket من تبويب Spribe الثاني" if launch_url
+                        "يجمع أدلة WebSocket من نافذة Spribe المستقلة" if launch_url
                         else "يجمع النتائج من Aviator game frame",
                         **self.tracker.snapshot(),
                     )
