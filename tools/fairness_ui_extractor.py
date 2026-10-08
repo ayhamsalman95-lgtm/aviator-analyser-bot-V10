@@ -213,42 +213,60 @@ async def main() -> None:
                 await goto_tolerant(page, cfg["game_url"], "game")
             print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
-            # Open the first Aviator iframe in the normal 1xBet tab.
-            # Leave it open for 10 seconds, then open the exact same live
-            # iframe URL in a new tab and collect from that second tab.
+            # Detect the first live Aviator iframe in the 1xBet tab, then
+            # wait for the user to open the same game in a NEW TAB (not a new
+            # browser window). Never create a second Aviator session ourselves.
             await asyncio.sleep(10)
             selector = "iframe.casino-games-stand-game-frame__iframe"
             iframe = page.locator(selector).nth(0)
             await iframe.wait_for(state="visible", timeout=30000)
             src = await iframe.get_attribute("src")
-            if not src or "launch.spribegaming.com/aviator" not in src:
-                raise RuntimeError(f"Unexpected Aviator iframe src: {src!r}")
+            if not src:
+                raise RuntimeError("Aviator iframe has no src")
             print(f"[AVIATOR-1] First game iframe URL: {src}", flush=True)
-            print("[AVIATOR-1] Leaving first game window open for 10 seconds.", flush=True)
-            await asyncio.sleep(10)
+            print("[AVIATOR] Open the Aviator game in a NEW TAB in this same Chrome window.", flush=True)
+            print("[AVIATOR] Waiting up to 120 seconds for the standalone Aviator tab...", flush=True)
 
-            game_page = await context.new_page()
-            print("[AVIATOR-2] Opening second game tab with the exact iframe URL.", flush=True)
-            await goto_tolerant(game_page, src, "second Aviator game tab")
-            print(f"[AVIATOR-2] Current URL={game_page.url}", flush=True)
+            deadline = time.monotonic() + 120
+            game_page = None
+            last_report = 0.0
+            while time.monotonic() < deadline:
+                for candidate in context.pages:
+                    if candidate == page:
+                        continue
+                    url = candidate.url or ""
+                    if "spribegaming.com" in url.lower() and "aviator" in url.lower():
+                        game_page = candidate
+                        break
+                if game_page is not None:
+                    break
+                now = time.monotonic()
+                if now - last_report >= 10:
+                    print(f"[WAIT] Chrome tabs={len(context.pages)}; standalone Aviator tab not detected yet.", flush=True)
+                    last_report = now
+                await asyncio.sleep(1)
 
+            if game_page is None:
+                raise RuntimeError("Standalone Aviator tab was not detected within 120 seconds")
+
+            print(f"[AVIATOR-2] Standalone Aviator TAB detected: {game_page.url}", flush=True)
             deadline = time.monotonic() + 120
             last_report = 0.0
             inspected = False
 
             while time.monotonic() < deadline:
-                now = time.monotonic()
                 target = game_page.main_frame
+                now = time.monotonic()
                 if now - last_report >= 10:
-                    print(f"[SCAN] second Aviator tab url={game_page.url}", flush=True)
+                    print(f"[SCAN] Aviator tab url={game_page.url}", flush=True)
                     last_report = now
 
-                if target.url and "launch.spribegaming.com/aviator" in target.url:
+                if target.url:
                     if await capture_fairness(target, out):
                         return
                     if not inspected:
                         inspected = True
-                        print("[FRAME-DIAG] Inspecting second Aviator tab once.", flush=True)
+                        print("[FRAME-DIAG] Inspecting standalone Aviator tab once.", flush=True)
                         await inspect_frame(target)
 
                     for candidate_selector in [
@@ -289,7 +307,7 @@ async def main() -> None:
                 await asyncio.sleep(1)
 
             print("[TIMEOUT] No Fairness UI found within 120 seconds.", flush=True)
-            print(f"[DIAG] second Aviator tab title={await game_page.title()} url={game_page.url}", flush=True)
+            print(f"[DIAG] Aviator tab title={await game_page.title()} url={game_page.url}", flush=True)
             await inspect_frame(game_page.main_frame)
         finally:
             # The browser was attached through CDP and is owned by noVNC/Chrome.
