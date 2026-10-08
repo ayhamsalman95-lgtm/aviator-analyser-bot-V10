@@ -15,9 +15,9 @@ _SECRET_KEYS = re.compile(
 )
 _QUERY_SECRET = re.compile(
     r"(?i)([?&](?:token|access_token|refresh_token|authorization|auth|password|pass|secret|signature|sig|"
-    r"cookie|session|sid|sessionid|jwt|key|apikey|api_key|user|user_id|userid|return_url)=)[^&#\\s]*"
+    r"cookie|session|sid|sessionid|jwt|key|apikey|api_key|user|user_id|userid|return_url)=)[^&#\s]*"
 )
-_LAUNCH_URL = re.compile(r"https?://launch\\.spribegaming\\.com/[^\\s\\\"'<>]+")
+_LAUNCH_URL = re.compile(r"https?://launch\.spribegaming\.com/[^\s\"'<>]+")
 
 
 def validate_launch_url(raw_url: str) -> str:
@@ -28,7 +28,6 @@ def validate_launch_url(raw_url: str) -> str:
     try:
         parsed = urlsplit(value)
         host = (parsed.hostname or "").lower().rstrip(".")
-        # Reject userinfo, non-HTTPS URLs, lookalike domains, and malformed ports.
         _ = parsed.port
     except Exception as exc:
         raise ValueError("AVIATOR_GAME_URL is malformed") from exc
@@ -56,7 +55,7 @@ def launch_delay_seconds(value: str | float | int | None = None) -> float:
 def redact_sensitive_text(value: object) -> str:
     """Redact credential-bearing query values from exception and diagnostic text."""
     text = str(value)
-    text = _QUERY_SECRET.sub(r"\\1[redacted]", text)
+    text = _QUERY_SECRET.sub(r"\1[redacted]", text)
 
     def clean_launch(match: re.Match[str]) -> str:
         raw = match.group(0)
