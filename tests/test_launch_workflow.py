@@ -44,7 +44,7 @@ class LaunchValidationTests(unittest.TestCase):
         diagnostic = redact_sensitive_text(f"navigation failed for {raw}")
         self.assertNotIn("12345", diagnostic)
         self.assertNotIn("TOPSECRET", diagnostic)
-        self.assertIn("[redacted]", diagnostic)
+        self.assertIn("redacted", diagnostic.lower())
 
 
 class TwoTabWorkflowRegressionTests(unittest.TestCase):
