@@ -293,6 +293,7 @@ class Collector:
     def on_binary_frame(self, data: bytes, ws_url: str) -> None:
         received_at = time.time()
         received_monotonic = time.monotonic()
+        self._last_network_activity_at = received_monotonic
         self._frame_index += 1
         frame_index = self._frame_index
         inter_arrival_ms = (
@@ -499,6 +500,8 @@ class Collector:
             limit = 20000
             retained = text[:limit]
             received_at = time.time()
+            self._last_network_activity_at = time.monotonic()
+            safe_payload = redact_sensitive_text(retained)
             self.netlog.write({
                 "kind": "ws_text",
                 "schema_version": 3,
@@ -510,7 +513,8 @@ class Collector:
                 "received_monotonic": time.monotonic(),
                 "timestamp_provenance": "collector_received_at",
                 "length": len(text),
-                "payload": retained,
+                "payload": safe_payload,
+                "payload_redacted": safe_payload != retained,
                 "payload_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "payload_complete": len(text) <= limit,
                 "truncated": len(text) > limit,
@@ -1352,6 +1356,7 @@ class Collector:
                     url = ws.url
                     if not self._is_spribe_game_resource(url):
                         return
+                    self._last_network_activity_at = time.monotonic()
                     self.netlog.write({
                         "kind": "ws_open",
                         "session_id": self.session_id,
@@ -1365,6 +1370,7 @@ class Collector:
                     })
 
                     def received(payload):
+                        self._last_network_activity_at = time.monotonic()
                         try:
                             if isinstance(payload, (bytes, bytearray, memoryview)):
                                 self.on_binary_frame(bytes(payload), url)
@@ -1494,6 +1500,10 @@ class Collector:
                 def on_frame_navigated(frame):
                     if not self._is_spribe_game_resource(frame.url):
                         return
+                    try:
+                        is_main_frame = frame == frame.page.main_frame
+                    except Exception:
+                        is_main_frame = False
                     self.netlog.write({
                         "kind": "game_frame_navigated", "schema_version": 3,
                         "session_id": self.session_id,
@@ -1502,7 +1512,7 @@ class Collector:
                         "received_at": time.time(),
                         "timestamp_provenance": "collector_observed_frame_navigation",
                         "url": safe_url(frame.url),
-                        "is_main_frame": frame == frame.page.main_frame,
+                        "is_main_frame": is_main_frame,
                         "capture_tab": "direct_spribe" if launch_url else "operator_game",
                     })
 
@@ -1596,6 +1606,7 @@ class Collector:
                     print("[CHROME] AVIATOR_GAME_URL is unset; using the operator game tab", flush=True)
 
                 self.tracker.last_event_at = time.time()
+                self._last_network_activity_at = time.monotonic()
                 watchdog = float(self.cfg["watchdog_no_event_s"])
                 game_frame = None
                 last_frame_diagnostic = 0.0
@@ -1659,8 +1670,8 @@ class Collector:
                         })
                     if self.cfg["fairness_autoclick"] and game_frame is not None:
                         await self.maybe_open_fairness(context)
-                    if time.time() - self.tracker.last_event_at > watchdog:
-                        raise SessionStale(f"no SmartFox command for {watchdog:.0f}s")
+                    if time.monotonic() - self._last_network_activity_at > watchdog:
+                        raise SessionStale(f"no Spribe network activity for {watchdog:.0f}s")
                     self.store.set_status(
                         "collecting",
                         "يجمع أدلة WebSocket من تبويب Spribe الثاني" if launch_url
