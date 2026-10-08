@@ -77,27 +77,43 @@ async def capture_fairness(frame, out) -> bool:
     return False
 
 
-async def goto_tolerant(page, url: str, label: str):
-    print(f"[NAV] Opening {label}...", flush=True)
+async def inspect_frame(frame) -> None:
     try:
-        response = await page.goto(
-            url,
-            wait_until="commit",
-            timeout=30000,
-        )
-        print(
-            f"[NAV] {label} navigation committed status={response.status if response else 'none'} "
-            f"url={page.url}",
-            flush=True,
-        )
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=90000)
-        except Exception as exc:
-            print(f"[NAV] {label} DOM load still pending; continuing: {exc}", flush=True)
-        return response
+        info = await frame.evaluate(r"""() => {
+          const clean = v => String(v ?? "").replace(/\s+/g, " ").trim();
+          const visible = el => {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 &&
+              s.display !== "none" && s.visibility !== "hidden" &&
+              parseFloat(s.opacity || "1") > 0.05;
+          };
+          const nodes = Array.from(document.querySelectorAll(
+            "button,a,[role='button'],input,select,textarea"
+          )).filter(visible).slice(0, 150).map(el => ({
+            tag: el.tagName.toLowerCase(),
+            text: clean(el.innerText || el.textContent || ""),
+            aria: clean(el.getAttribute("aria-label")),
+            title: clean(el.getAttribute("title")),
+            cls: clean(el.className),
+            type: clean(el.getAttribute("type"))
+          }));
+          return {
+            title: clean(document.title),
+            text: clean(document.body?.innerText || "").slice(0, 12000),
+            nodes
+          };
+        }""")
+        print("[FRAME-DIAG] title=" + info["title"], flush=True)
+        print("[FRAME-DIAG] text=" + info["text"], flush=True)
+        for n in info["nodes"]:
+            print(
+                "[FRAME-ELEMENT] "
+                + json.dumps(n, ensure_ascii=False, separators=(",", ":")),
+                flush=True,
+            )
     except Exception as exc:
-        print(f"[NAV] {label} navigation warning; continuing: {exc}", flush=True)
-        return None
+        print(f"[FRAME-DIAG] inspect failed: {exc}", flush=True)
 
 
 async def main() -> None:
@@ -149,6 +165,7 @@ async def main() -> None:
             host = cfg["aviator_frame_host"]
             deadline = time.monotonic() + 90
             last_report = 0.0
+            inspected = set()
 
             while time.monotonic() < deadline:
                 frames = list(page.frames)
@@ -168,13 +185,48 @@ async def main() -> None:
                     if await capture_fairness(frame, out):
                         return
 
-                    icons = frame.locator("div.dropdown-toggle.button > .button-icon")
-                    for i in range(await icons.count()):
-                        icon = icons.nth(i)
-                        if await icon.is_visible():
-                            print("[MENU] Found visible menu icon; clicking once.", flush=True)
-                            await icon.locator("..").click(timeout=2500)
-                            await frame.wait_for_timeout(700)
+                    frame_key = frame.url
+                    if frame_key not in inspected:
+                        inspected.add(frame_key)
+                        print("[FRAME-DIAG] Inspecting target iframe once.", flush=True)
+                        await inspect_frame(frame)
+
+                    menu_candidates = [
+                        "div.dropdown-toggle.button",
+                        "[class*='dropdown-toggle']",
+                        "[aria-label*='menu' i]",
+                        "[title*='menu' i]",
+                        "button"
+                    ]
+                    clicked = False
+                    for selector in menu_candidates:
+                        loc = frame.locator(selector)
+                        count = await loc.count()
+                        for i in range(min(count, 20)):
+                            item = loc.nth(i)
+                            try:
+                                if await item.is_visible():
+                                    txt = (await item.inner_text()).strip()
+                                    aria = await item.get_attribute("aria-label")
+                                    title = await item.get_attribute("title")
+                                    cls = await item.get_attribute("class") or ""
+                                    if selector == "button" and not (
+                                        "menu" in f"{txt} {aria} {title} {cls}".lower()
+                                        or "dropdown" in cls.lower()
+                                    ):
+                                        continue
+                                    print(
+                                        f"[MENU] Clicking candidate selector={selector} "
+                                        f"text={txt!r} aria={aria!r}",
+                                        flush=True,
+                                    )
+                                    await item.click(timeout=2500)
+                                    await frame.wait_for_timeout(1000)
+                                    clicked = True
+                                    break
+                            except Exception:
+                                continue
+                        if clicked:
                             break
 
                     if await capture_fairness(frame, out):
@@ -184,14 +236,31 @@ async def main() -> None:
 
             print("[TIMEOUT] No Fairness UI found within 90 seconds.", flush=True)
             print(f"[DIAG] page title={await page.title()} url={page.url}", flush=True)
-            print("[DIAG] Visible body text:", flush=True)
-            try:
-                text = await page.locator("body").inner_text(timeout=5000)
-                print(" ".join(text.split())[:6000], flush=True)
-            except Exception as exc:
-                print(f"[DIAG] Could not read body text: {exc}", flush=True)
+            for frame in list(page.frames):
+                if host in (frame.url or ""):
+                    print("[TIMEOUT] Final target-frame diagnostic:", flush=True)
+                    await inspect_frame(frame)
         finally:
             await context.close()
+
+
+async def goto_tolerant(page, url: str, label: str):
+    print(f"[NAV] Opening {label}...", flush=True)
+    try:
+        response = await page.goto(url, wait_until="commit", timeout=30000)
+        print(
+            f"[NAV] {label} navigation committed status={response.status if response else 'none'} "
+            f"url={page.url}",
+            flush=True,
+        )
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=90000)
+        except Exception as exc:
+            print(f"[NAV] {label} DOM load still pending; continuing: {exc}", flush=True)
+        return response
+    except Exception as exc:
+        print(f"[NAV] {label} navigation warning; continuing: {exc}", flush=True)
+        return None
 
 
 if __name__ == "__main__":
