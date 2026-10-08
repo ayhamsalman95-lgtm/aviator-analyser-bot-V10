@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import subprocess
 import time
 
 from playwright.async_api import async_playwright
@@ -181,14 +183,26 @@ async def main() -> None:
     out = cfg.path("logs_dir") / "network" / "fairness_ui.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    display = os.environ.get("DISPLAY", ":99")
+    xvfb = None
+    if not os.environ.get("DISPLAY"):
+        print(f"[XVFB] Starting virtual display {display}...", flush=True)
+        xvfb = subprocess.Popen(
+            ["Xvfb", display, "-screen", "0", "1440x900x24", "-ac", "-noreset"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.environ["DISPLAY"] = display
+        await asyncio.sleep(2)
+
     async with async_playwright() as p:
-        print("[START] Launching headless Chrome...", flush=True)
+        print("[START] Launching headed Chrome...", flush=True)
         context = await p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             channel="chrome",
-            headless=True,
+            headless=False,
             viewport={"width": 1440, "height": 900},
-            args=["--disable-notifications"],
+            args=["--disable-notifications", "--disable-dev-shm-usage"],
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
@@ -196,7 +210,7 @@ async def main() -> None:
             print(f"[NAV] Home current title={await page.title()} url={page.url}", flush=True)
 
             if await page.locator("input[type='password']").count():
-                print("[LOGIN] Login page detected. Headless mode cannot accept manual input; waiting for an existing authenticated session.", flush=True)
+                print("[LOGIN] Login page detected. Waiting for existing authenticated session.", flush=True)
                 deadline = time.monotonic() + float(cfg["login_wait_s"])
                 while time.monotonic() < deadline:
                     await asyncio.sleep(2)
@@ -211,7 +225,7 @@ async def main() -> None:
             print(f"[NAV] Game current title={await page.title()} url={page.url}", flush=True)
 
             host = cfg["aviator_frame_host"]
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + 120
             last_report = 0.0
             inspected = set()
 
@@ -220,10 +234,7 @@ async def main() -> None:
                 host_frames = [f for f in frames if host in (f.url or "")]
                 now = time.monotonic()
                 if now - last_report >= 10:
-                    print(
-                        f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} page_url={page.url}",
-                        flush=True,
-                    )
+                    print(f"[SCAN] frames={len(frames)} target_frames={len(host_frames)} page_url={page.url}", flush=True)
                     for f in frames:
                         print(f"[FRAME] {f.url}", flush=True)
                     last_report = now
@@ -276,7 +287,7 @@ async def main() -> None:
 
                 await asyncio.sleep(1)
 
-            print("[TIMEOUT] No Fairness UI found within 90 seconds.", flush=True)
+            print("[TIMEOUT] No Fairness UI found within 120 seconds.", flush=True)
             print(f"[DIAG] page title={await page.title()} url={page.url}", flush=True)
             for frame in list(page.frames):
                 if host in (frame.url or ""):
@@ -284,6 +295,12 @@ async def main() -> None:
                     await inspect_frame(frame)
         finally:
             await context.close()
+            if xvfb:
+                xvfb.terminate()
+                try:
+                    xvfb.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    xvfb.kill()
 
 
 if __name__ == "__main__":
