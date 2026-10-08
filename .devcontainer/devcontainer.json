@@ -1,0 +1,12 @@
+{
+  "name": "aviator-analyser-bot-V10",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Chrome noVNC",
+      "onAutoForward": "notify"
+    }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb x11vnc novnc websockify"
+}
