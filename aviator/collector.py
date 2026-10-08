@@ -1490,3 +1490,24 @@ class Collector:
             started = time.monotonic()
             try:
                 await self.run_session()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if time.monotonic() - started > 300:
+                    failures = 0  # the session was healthy for a while
+                delay = backoff[min(failures, len(backoff) - 1)]
+                failures += 1
+                self.store.set_status("reconnecting", f"{type(exc).__name__}: {exc}", retry_in_s=delay,
+                                      failures=failures)
+                print(f"[COLLECTOR] session ended: {type(exc).__name__}: {exc}; reconnect in {delay:.0f}s",
+                      flush=True)
+                await asyncio.sleep(delay)
+
+
+def main() -> None:
+    col = Collector()
+    try:
+        asyncio.run(col.supervise())
+    except KeyboardInterrupt:
+        col.store.set_status("stopped", "stopped by user")
+        print("[COLLECTOR] stopped", flush=True)
