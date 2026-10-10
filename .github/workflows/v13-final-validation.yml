@@ -3,7 +3,7 @@ name: V13 final validation
 on:
   workflow_dispatch:
   push:
-    branches: [main, v13-prir, fix/two-tab-forensic-collector]
+    branches: [main, v13-prir, fix/two-tab-forensic-collector, fix/windows-jsonl-rotation-retry]
 
 permissions:
   contents: read
