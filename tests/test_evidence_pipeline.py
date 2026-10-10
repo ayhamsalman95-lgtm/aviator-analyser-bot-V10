@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from aviator.collector import Collector, INJECT_JS
@@ -112,6 +113,29 @@ class EvidencePipelineTests(unittest.TestCase):
         finally:
             p.cleanup()
 
+
+    def test_rotation_retries_transient_permission_error(self):
+        p = TempProject()
+        try:
+            log = RotatingJsonlLog(p.dir / "network.jsonl", max_bytes=80, backups=1)
+            self.assertTrue(log.write({"kind": "first", "payload": "x" * 40}))
+            real_replace = __import__("os").replace
+            attempts = {"count": 0}
+
+            def temporarily_locked(src, dst):
+                attempts["count"] += 1
+                if attempts["count"] < 3:
+                    raise PermissionError(13, "file is temporarily in use", str(src))
+                return real_replace(src, dst)
+
+            with patch("aviator.netlog.os.replace", side_effect=temporarily_locked):
+                self.assertTrue(log.write({"kind": "second", "payload": "y" * 40}))
+            self.assertEqual(attempts["count"], 3)
+            self.assertGreaterEqual(log.rotation_events, 1)
+            self.assertTrue((p.dir / "network.jsonl.1").exists())
+            self.assertEqual(log.write_failures, 0)
+        finally:
+            p.cleanup()
 
     def test_rotation_does_not_invent_record_drop_count(self):
         p = TempProject()

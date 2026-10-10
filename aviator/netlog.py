@@ -1,6 +1,7 @@
 """Rotating JSONL evidence log with explicit loss observability."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -68,6 +69,27 @@ class RotatingJsonlLog:
         self.records_dropped = 0
         self.last_error: str | None = None
 
+    @staticmethod
+    def _replace_with_retry(src: Path, dst: Path, attempts: int = 5) -> None:
+        """Retry transient Windows file-sharing/permission locks during log rotation.
+
+        Antivirus scanners and short-lived readers can briefly deny rename access.
+        Never ignore a failed rename: after bounded retries the error is raised so
+        write() reports the evidence-write failure rather than silently losing data.
+        """
+        for attempt in range(attempts):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError as exc:
+                retryable = (
+                    getattr(exc, "winerror", None) in (5, 32)
+                    or exc.errno in (errno.EACCES, errno.EPERM)
+                )
+                if not retryable or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
+
     def _rotate(self) -> dict:
         dropped_backup = None
         dropped_backup_size = None
@@ -81,9 +103,9 @@ class RotatingJsonlLog:
             src = self.path.with_name(f"{self.path.name}.{i}")
             dst = self.path.with_name(f"{self.path.name}.{i + 1}")
             if src.exists():
-                os.replace(src, dst)
+                self._replace_with_retry(src, dst)
         if self.backups > 0:
-            os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
+            self._replace_with_retry(self.path, self.path.with_name(f"{self.path.name}.1"))
         else:
             self.path.unlink()
         self.rotation_events += 1
