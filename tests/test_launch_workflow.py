@@ -48,13 +48,20 @@ class LaunchValidationTests(unittest.TestCase):
 
 
 class SeparateWindowWorkflowRegressionTests(unittest.TestCase):
-    def test_workflow_order_is_operator_then_delay_then_new_window(self):
+    def test_default_workflow_waits_for_manual_spribe_window(self):
+        source = inspect.getsource(Collector.run_session)
+        self.assertIn('raw_launch_url = os.environ.get("AVIATOR_GAME_URL", "").strip()', source)
+        self.assertIn("await operator_page.goto(site_home_url", source)
+        self.assertIn("await operator_page.goto(operator_url", source)
+        self.assertIn('context.on("page", on_new_page)', source)
+        self.assertIn("Open Spribe Aviator manually in a SEPARATE window", source)
+        self.assertIn("candidate is operator_page", source)
+        self.assertIn("manual_spribe_window_selected", source)
+
+    def test_optional_direct_launch_keeps_listeners_before_navigation(self):
         source = inspect.getsource(Collector.run_session)
         steps = [
-            "operator_page.goto(site_home_url",
-            "operator_page.goto(operator_url",
             "await asyncio.sleep(launch_delay)",
-            'async with context.expect_page() as page_info:',
             '"Target.createTarget"',
             "attach(capture_page)",
             "await capture_page.goto(launch_url",
