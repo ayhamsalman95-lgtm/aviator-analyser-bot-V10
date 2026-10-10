@@ -1696,7 +1696,12 @@ class Collector:
                         })
                     if self.cfg["fairness_autoclick"] and game_frame is not None:
                         await self.maybe_open_fairness(context)
-                    if time.monotonic() - self._last_network_activity_at > watchdog:
+                    # While manual mode is waiting for the user to open Spribe,
+                    # there is no selected capture page yet; operator-page traffic must
+                    # not trigger the no-game-activity watchdog.
+                    if (launch_url or capture_page is not None) and (
+                        time.monotonic() - self._last_network_activity_at > watchdog
+                    ):
                         raise SessionStale(f"no Spribe network activity for {watchdog:.0f}s")
                     self.store.set_status(
                         "collecting",
