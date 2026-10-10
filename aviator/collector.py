@@ -1540,16 +1540,9 @@ class Collector:
                         "capture_tab": "direct_spribe" if launch_url else "operator_game",
                     })
 
-                attached_page_ids = set()
-
                 def attach(page):
-                    # Attach each candidate page once. In manual mode this callback runs
-                    # as soon as the user opens a separate Chrome window, before navigation
-                    # completes, so the initial Spribe WebSocket handshake is not missed.
-                    page_id = id(page)
-                    if page_id in attached_page_ids:
-                        return
-                    attached_page_ids.add(page_id)
+                    # These handlers belong only to the selected capture page. In direct
+                    # mode, attach before goto so the initial handshake/frames are observed.
                     page.on("websocket", on_ws)
                     page.on("request", on_request)
                     page.on("response", on_response)
@@ -1557,11 +1550,6 @@ class Collector:
                     page.on("framenavigated", on_frame_navigated)
                     page.on("frameattached", on_frame_attached)
                     page.on("framedetached", on_frame_detached)
-
-                def on_new_page(page):
-                    # Never attach capture handlers to the 1xBet operator tab.
-                    if page is not operator_page:
-                        attach(page)
 
                 # Reuse only a tab explicitly marked by this collector. Never navigate an
                 # arbitrary pre-existing user tab when attaching over CDP.
@@ -1587,16 +1575,13 @@ class Collector:
                         operator_page = await context.new_page()
                     await operator_page.evaluate("(name) => { window.name = name; }", operator_marker)
 
-                # Observe new tabs/windows created by the operator after startup.
-                # The default workflow is manual: the user opens Spribe in a second
-                # Chrome window, and that page is selected for capture when its game frame
-                # appears. A direct launch URL remains an optional legacy mode.
-                context.on("page", on_new_page)
-
                 self.store.set_status("opening", "فتح موقع 1xBet")
                 await operator_page.goto(site_home_url, wait_until="domcontentloaded", timeout=60000)
                 await self._wait_login(operator_page)
                 self.store.set_status("opening_game", "فتح Aviator 52358")
+                if not launch_url:
+                    # Backward-compatible mode: capture the operator's game tab directly.
+                    attach(operator_page)
                 await operator_page.goto(operator_url, wait_until="domcontentloaded", timeout=60000)
                 if operator_page.url.startswith("chrome-error://"):
                     raise RuntimeError("Chrome could not reach the configured operator game page")
@@ -1643,67 +1628,17 @@ class Collector:
                     if capture_page.url.startswith("chrome-error://"):
                         raise RuntimeError("Chrome could not reach the direct Spribe launch page")
                 else:
-                    # Manual capture mode: leave the operator page open and wait for the
-                    # user to open Spribe in another window belonging to this same Chrome
-                    # profile/session. Do not capture the 1xBet iframe.
-                    capture_page = None
-                    print(
-                        "[CHROME] Open Spribe Aviator manually in a SEPARATE window "
-                        "of this Chrome session; capture will start when its game frame appears.",
-                        flush=True,
-                    )
-                    self.store.set_status(
-                        "waiting_for_spribe_window",
-                        "افتح نافذة Spribe منفصلة داخل جلسة Chrome نفسها",
-                    )
+                    capture_page = operator_page
+                    print("[CHROME] AVIATOR_GAME_URL is unset; using the operator game tab", flush=True)
 
                 self.tracker.last_event_at = time.time()
                 self._last_network_activity_at = time.monotonic()
                 watchdog = float(self.cfg["watchdog_no_event_s"])
                 game_frame = None
                 last_frame_diagnostic = 0.0
-                last_manual_wait_notice = 0.0
                 while True:
-                    if launch_url and (capture_page is None or capture_page.is_closed()):
+                    if capture_page.is_closed():
                         raise RuntimeError("collector capture tab was closed")
-                    if not launch_url and (capture_page is None or capture_page.is_closed()):
-                        capture_page = None
-                        game_frame = None
-                        for candidate in list(context.pages):
-                            if candidate is operator_page or candidate.is_closed():
-                                continue
-                            attach(candidate)
-                            try:
-                                candidate_frame = await self._find_live_game_frame(candidate)
-                            except Exception:
-                                candidate_frame = None
-                            if candidate_frame is not None:
-                                capture_page = candidate
-                                game_frame = candidate_frame
-                                self.netlog.write({
-                                    "kind": "manual_spribe_window_selected",
-                                    "schema_version": 3,
-                                    "session_id": self.session_id,
-                                    "collector_run_id": self.collector_run_id,
-                                    "event_id": self._next_event_id("manual-window-selected"),
-                                    "received_at": time.time(),
-                                    "timestamp_provenance": "collector_observed_frame",
-                                    "capture_page_url": safe_url(candidate.url),
-                                    "frame_url": safe_url(candidate_frame.url),
-                                    "capture_tab": "manual_spribe_window",
-                                })
-                                print("[CHROME] Spribe window detected; collecting its network frames", flush=True)
-                                break
-                        if capture_page is None:
-                            if time.monotonic() - last_manual_wait_notice >= 15:
-                                last_manual_wait_notice = time.monotonic()
-                                print(
-                                    "[CHROME] Waiting for your separate Spribe window. "
-                                    "Open it in this Chrome session (not another Chrome profile).",
-                                    flush=True,
-                                )
-                            await asyncio.sleep(0.5)
-                            continue
                     try:
                         refreshed = await self._find_live_game_frame(capture_page)
                         if refreshed is not None:
@@ -1761,19 +1696,24 @@ class Collector:
                         })
                     if self.cfg["fairness_autoclick"] and game_frame is not None:
                         await self.maybe_open_fairness(context)
-                    if time.monotonic() - self._last_network_activity_at > watchdog:
+                    # While manual mode is waiting for the user to open Spribe,
+                    # there is no selected capture page yet; operator-page traffic must
+                    # not trigger the no-game-activity watchdog.
+                    if (launch_url or capture_page is not None) and (
+                        time.monotonic() - self._last_network_activity_at > watchdog
+                    ):
                         raise SessionStale(f"no Spribe network activity for {watchdog:.0f}s")
                     self.store.set_status(
                         "collecting",
-                        "يجمع أدلة WebSocket من نافذة Spribe المنفصلة" if not launch_url
-                        else "يجمع أدلة WebSocket من تبويب Spribe الثاني",
+                        "يجمع أدلة WebSocket من تبويب Spribe الثاني" if launch_url
+                        else "يجمع النتائج من Aviator game frame",
                         **self.tracker.snapshot(),
                     )
                     await asyncio.sleep(0.5)
             finally:
-                # Preserve user-created pages in manual mode. Only close the page this
-                # collector itself created for optional direct-launch mode over CDP.
-                if launch_url and not owns_context and capture_page is not None and capture_page is not operator_page:
+                # In CDP mode, preserve the operator tab. Only the separate direct
+                # capture tab is disposable. Never close a page selected by frame scan.
+                if not owns_context and capture_page is not None and capture_page is not operator_page:
                     try:
                         if not capture_page.is_closed():
                             await capture_page.close()
