@@ -1540,9 +1540,15 @@ class Collector:
                         "capture_tab": "direct_spribe" if launch_url else "operator_game",
                     })
 
+                attached_page_ids = set()
+
                 def attach(page):
-                    # These handlers belong only to the selected capture page. In direct
-                    # mode, attach before goto so the initial handshake/frames are observed.
+                    # Context page events can fire before navigation; attach once so the
+                    # initial Spribe handshake and frames are not missed.
+                    page_id = id(page)
+                    if page_id in attached_page_ids:
+                        return
+                    attached_page_ids.add(page_id)
                     page.on("websocket", on_ws)
                     page.on("request", on_request)
                     page.on("response", on_response)
@@ -1550,6 +1556,12 @@ class Collector:
                     page.on("framenavigated", on_frame_navigated)
                     page.on("frameattached", on_frame_attached)
                     page.on("framedetached", on_frame_detached)
+
+                def on_new_page(page):
+                    # Only pages in this Playwright context are observable here.
+                    attach(page)
+
+                context.on("page", on_new_page)
 
                 # Reuse only a tab explicitly marked by this collector. Never navigate an
                 # arbitrary pre-existing user tab when attaching over CDP.
@@ -1594,10 +1606,7 @@ class Collector:
                     )
                     print(f"[CHROME] Operator Aviator tab opened; waiting {launch_delay:g}s", flush=True)
                     await asyncio.sleep(launch_delay)
-                    # Create a separate visible Chrome window in the SAME browser context.
-                    # This preserves the existing profile cookies/local storage while isolating
-                    # the direct launch from the operator page. A new browser context would lose
-                    # the authenticated session, so do not use browser.new_page() here.
+                    # Explicit opt-in only: preserve the existing direct-launch workflow.
                     if cdp_url:
                         try:
                             browser_cdp = await browser.new_browser_cdp_session()
@@ -1611,25 +1620,58 @@ class Collector:
                                 "(name) => { window.name = name; }",
                                 "__aviator_v10_capture_window__",
                             )
-                            print("[CHROME] Separate capture window created in existing Chrome session", flush=True)
                         except Exception as exc:
                             raise RuntimeError(
                                 f"Could not create separate Chrome capture window: {type(exc).__name__}"
                             ) from exc
                     else:
-                        # Persistent-context fallback; keep the same profile/context.
                         capture_page = await context.new_page()
-                        print("[CHROME] Capture page created in the persistent Chrome context", flush=True)
-
                     attach(capture_page)
                     self.store.set_status("opening_direct_spribe", "فتح نافذة Spribe مستقلة")
-                    print("[CHROME] Opening direct Spribe URL in a new window", flush=True)
+                    print("[CHROME] Opening configured Spribe launch URL", flush=True)
                     await capture_page.goto(launch_url, wait_until="domcontentloaded", timeout=60000)
                     if capture_page.url.startswith("chrome-error://"):
                         raise RuntimeError("Chrome could not reach the direct Spribe launch page")
                 else:
-                    capture_page = operator_page
-                    print("[CHROME] AVIATOR_GAME_URL is unset; using the operator game tab", flush=True)
+                    # Default workflow: keep 1xBet open and wait for the user to open Spribe.
+                    capture_page = None
+                    self.store.set_status(
+                        "waiting_for_manual_spribe_window",
+                        "افتح Spribe Aviator يدويًا في نافذة منفصلة ضمن Chrome نفسه",
+                    )
+                    print(
+                        "[CHROME] Open Spribe Aviator manually in a SEPARATE window "
+                        "inside this same Chrome session; a separate Chrome profile is not visible.",
+                        flush=True,
+                    )
+                    while capture_page is None:
+                        for candidate in list(context.pages):
+                            if candidate is operator_page or candidate.is_closed():
+                                continue
+                            try:
+                                if self._is_spribe_game_resource(candidate.url):
+                                    capture_page = candidate
+                                    break
+                                if await self._find_live_game_frame(candidate) is not None:
+                                    capture_page = candidate
+                                    break
+                            except Exception:
+                                continue
+                        if capture_page is None:
+                            await asyncio.sleep(0.5)
+                    attach(capture_page)
+                    self.netlog.write({
+                        "kind": "manual_spribe_window_selected", "schema_version": 3,
+                        "session_id": self.session_id,
+                        "collector_run_id": self.collector_run_id,
+                        "event_id": self._next_event_id("manual-spribe-selected"),
+                        "received_at": time.time(),
+                        "timestamp_provenance": "collector_observed_page",
+                        "capture_page_url": safe_url(capture_page.url),
+                        "operator_page_url": safe_url(operator_page.url),
+                        "capture_tab": "manual_spribe",
+                    })
+                    print("[CHROME] Manual Spribe page detected; capturing its WebSocket.", flush=True)
 
                 self.tracker.last_event_at = time.time()
                 self._last_network_activity_at = time.monotonic()

@@ -57,6 +57,8 @@ class SeparateWindowWorkflowRegressionTests(unittest.TestCase):
         self.assertIn("Open Spribe Aviator manually in a SEPARATE window", source)
         self.assertIn("candidate is operator_page", source)
         self.assertIn("manual_spribe_window_selected", source)
+        self.assertIn("waiting_for_manual_spribe_window", source)
+        self.assertIn("capture_page = None", source)
 
     def test_optional_direct_launch_keeps_listeners_before_navigation(self):
         source = inspect.getsource(Collector.run_session)
