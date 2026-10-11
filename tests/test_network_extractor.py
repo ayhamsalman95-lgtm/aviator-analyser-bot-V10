@@ -193,7 +193,7 @@ class NetworkExtractorTests(unittest.TestCase):
             self.assertGreater(len([l for l in lines if l]), 0)
 
     def test_websocket_frame_extraction(self):
-        """Verify WebSocket frame extraction including decode exceptions."""
+        """Verify WebSocket frame extraction including decode exceptions and original payload/error retention."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             source = tmpdir / "game_network.jsonl"
@@ -204,21 +204,49 @@ class NetworkExtractorTests(unittest.TestCase):
                     "timestamp": 1000000.0,
                     "type": "binary",
                     "url": "wss://api.example.com",
-                    "data": "frame_data"
+                    "payload_b64": "ZnJhbWVfZGF0YQ==",
+                    "sha256": "abc123sha256",
+                    "frame_index": 1,
+                    "frame_id": "sess:frame:1",
+                    "session_id": "sess-123",
+                },
+                {
+                    "kind": "ws_binary_frame",
+                    "timestamp": 1000001.0,
+                    "url": "wss://api.example.com",
+                    "payload_b64": "ZnJhbWVfZnJhbWU=",
+                    "sha256": "def456sha256",
+                    "frame_index": 2,
+                    "frame_id": "sess:frame:2",
+                    "session_id": "sess-123",
                 },
                 {
                     "kind": "ws_binary_undecoded",
-                    "timestamp": 1000001.0,
+                    "timestamp": 1000002.0,
                     "type": "binary",
                     "url": "wss://api.example.com",
-                    "payload": "undecoded_data"
+                    "payload_b64": "dW5kZWNvZGVk",
+                    "frame_index": 3,
+                    "frame_id": "sess:frame:3",
+                    "session_id": "sess-123",
                 },
                 {
                     "kind": "ws_binary_decode_exception",
-                    "timestamp": 1000002.0,
+                    "timestamp": 1000003.0,
                     "url": "wss://api.example.com",
-                    "error": "DecompressError",
-                    "payload_b64": "SGVsbG8="
+                    "error_type": "DecompressError",
+                    "error": "corrupt zstd stream",
+                    "payload_b64": "SGVsbG8=",
+                    "payload_complete": True,
+                    "sha256": "123456sha256",
+                    "sha1": "789sha1",
+                    "byte_length": 5,
+                    "length": 5,
+                    "frame_index": 4,
+                    "frame_id": "sess:frame:4",
+                    "session_id": "sess-123",
+                    "collector_run_id": "run-456",
+                    "event_id": "sess-123:frame4",
                 }
             ]
             
@@ -230,13 +258,41 @@ class NetworkExtractorTests(unittest.TestCase):
             extractor = NetworkExtractor(source, output)
             stats = extractor.extract()
             
-            # Verify all three WebSocket formats were counted and classified
-            self.assertEqual(stats["ws_binary_count"] + stats["ws_binary_undecoded_count"], 3)
+            # Verify counts: 2 normal binary frames + 2 undecoded/exception frames
+            self.assertEqual(stats["ws_binary_count"], 2)
+            self.assertEqual(stats["ws_binary_undecoded_count"], 2)
             self.assertTrue(output.exists())
 
             lines = [json.loads(l) for l in output.read_text().strip().split("\n") if l]
-            classifications = [r.get("classification") for r in lines]
-            self.assertIn("undecoded_binary", classifications)
+            self.assertEqual(len(lines), 4)
+
+            # Ordinary frames retained classification 'websocket_frame'
+            self.assertEqual(lines[0]["classification"], "websocket_frame")
+            self.assertEqual(lines[0]["frame_type"], "ws_binary")
+            self.assertEqual(lines[0]["payload_b64"], "ZnJhbWVfZGF0YQ==")
+
+            self.assertEqual(lines[1]["classification"], "websocket_frame")
+            self.assertEqual(lines[1]["frame_type"], "ws_binary_frame")
+
+            # Undecoded frame retained classification 'undecoded_binary'
+            self.assertEqual(lines[2]["classification"], "undecoded_binary")
+            self.assertEqual(lines[2]["frame_type"], "ws_binary_undecoded")
+
+            # Exception frame classified as 'undecoded_binary' and preserves payload + error metadata
+            exc_rec = lines[3]
+            self.assertEqual(exc_rec["classification"], "undecoded_binary")
+            self.assertEqual(exc_rec["frame_type"], "ws_binary_decode_exception")
+            self.assertEqual(exc_rec["payload_b64"], "SGVsbG8=")
+            self.assertEqual(exc_rec["error_type"], "DecompressError")
+            self.assertEqual(exc_rec["error"], "corrupt zstd stream")
+            self.assertEqual(exc_rec["sha256"], "123456sha256")
+            self.assertEqual(exc_rec["sha1"], "789sha1")
+            self.assertEqual(exc_rec["byte_length"], 5)
+            self.assertEqual(exc_rec["frame_index"], 4)
+            self.assertEqual(exc_rec["frame_id"], "sess:frame:4")
+            self.assertEqual(exc_rec["session_id"], "sess-123")
+            self.assertEqual(exc_rec["collector_run_id"], "run-456")
+            self.assertEqual(exc_rec["event_id"], "sess-123:frame4")
 
     def test_error_handling(self):
         """Verify error handling for malformed JSON."""

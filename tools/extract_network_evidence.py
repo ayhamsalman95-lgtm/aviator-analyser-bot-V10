@@ -338,7 +338,7 @@ class NetworkExtractor:
             # Preserve complete frame data if available
             for key in ("frame_data", "payload_b64", "payload_complete", "sha256", "sha1",
                         "byte_length", "length", "frame_index", "frame_id", "session_id",
-                        "collector_run_id", "event_id", "decode_status"):
+                        "collector_run_id", "event_id", "decode_status", "error", "error_type"):
                 if key in data:
                     record[key] = data.get(key)
             records.append(record)
