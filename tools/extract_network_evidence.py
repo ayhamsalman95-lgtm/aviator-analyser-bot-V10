@@ -324,9 +324,9 @@ class NetworkExtractor:
                         records.append(record)
         
         # Handle WebSocket binary frames
-        elif kind in ("ws_binary", "ws_binary_undecoded", "ws_binary_frame"):
-            self.stats["ws_binary_undecoded_count" if "undecoded" in kind else "ws_binary_count"] += 1
-            classification = "undecoded_binary" if "undecoded" in kind else "websocket_frame"
+        elif kind in ("ws_binary", "ws_binary_undecoded", "ws_binary_frame", "ws_binary_decode_exception"):
+            self.stats["ws_binary_undecoded_count" if ("undecoded" in kind or "exception" in kind) else "ws_binary_count"] += 1
+            classification = "undecoded_binary" if ("undecoded" in kind or "exception" in kind) else "websocket_frame"
             record = {
                 "classification": classification,
                 "kind": "websocket_frame",
@@ -338,7 +338,7 @@ class NetworkExtractor:
             # Preserve complete frame data if available
             for key in ("frame_data", "payload_b64", "payload_complete", "sha256", "sha1",
                         "byte_length", "length", "frame_index", "frame_id", "session_id",
-                        "collector_run_id", "event_id", "decode_status"):
+                        "collector_run_id", "event_id", "decode_status", "error", "error_type"):
                 if key in data:
                     record[key] = data.get(key)
             records.append(record)

@@ -110,14 +110,14 @@ class ModeSelectionTests(unittest.TestCase):
 
     def test_shipped_config_json(self):
         cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["collection_mode"], "forensic")
+        self.assertEqual(cfg["collection_mode"], "research")
         self.assertEqual(cfg["game_id"], 52358)
         # null = "follow the collection mode" (tests/test_research_fixes.py checks the values)
         for key in ("network_log_max_bytes", "network_log_backups", "log_text_frames"):
             self.assertIn(key, cfg)
             self.assertIsNone(cfg[key], key)
         self.assertIn("thresholds", cfg)  # existing settings are kept
-        self.assertEqual(load_config().collection_mode, FORENSIC)
+        self.assertEqual(load_config().collection_mode, RESEARCH)
 
 
 class PolicyFilterTests(unittest.TestCase):
