@@ -193,7 +193,7 @@ class NetworkExtractorTests(unittest.TestCase):
             self.assertGreater(len([l for l in lines if l]), 0)
 
     def test_websocket_frame_extraction(self):
-        """Verify WebSocket frame extraction."""
+        """Verify WebSocket frame extraction including decode exceptions."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             source = tmpdir / "game_network.jsonl"
@@ -212,6 +212,13 @@ class NetworkExtractorTests(unittest.TestCase):
                     "type": "binary",
                     "url": "wss://api.example.com",
                     "payload": "undecoded_data"
+                },
+                {
+                    "kind": "ws_binary_decode_exception",
+                    "timestamp": 1000002.0,
+                    "url": "wss://api.example.com",
+                    "error": "DecompressError",
+                    "payload_b64": "SGVsbG8="
                 }
             ]
             
@@ -223,9 +230,13 @@ class NetworkExtractorTests(unittest.TestCase):
             extractor = NetworkExtractor(source, output)
             stats = extractor.extract()
             
-            # Verify both WebSocket formats were counted
-            self.assertEqual(stats["ws_binary_count"] + stats["ws_binary_undecoded_count"], 2)
+            # Verify all three WebSocket formats were counted and classified
+            self.assertEqual(stats["ws_binary_count"] + stats["ws_binary_undecoded_count"], 3)
             self.assertTrue(output.exists())
+
+            lines = [json.loads(l) for l in output.read_text().strip().split("\n") if l]
+            classifications = [r.get("classification") for r in lines]
+            self.assertIn("undecoded_binary", classifications)
 
     def test_error_handling(self):
         """Verify error handling for malformed JSON."""
